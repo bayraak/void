@@ -34,6 +34,7 @@ import { issueProjectProxyToken } from '../proxy-token-rotation.ts';
 import { RESERVED_BINDING_NAMES } from '../reserved-bindings.ts';
 import { deployments } from '../schema.ts';
 import { type DeployManifest, type DeployEvent, type Deployment, type Project } from '../types.ts';
+import { withKnownLength, workerUploadBody, type WorkerModule } from '../worker-upload.ts';
 import {
   buildWebSocketUploadBindings,
   buildSandboxUploadBindings,
@@ -69,7 +70,7 @@ export async function uploadDeploymentWorker(input: {
   readonly assetsByHash: Map<string, Readonly<{ bytes: Uint8Array; contentType: string }>>;
   readonly incomingAssetManifest: Record<string, AssetManifestEntry>;
   wfpMirroredManifestDeploymentId: string | null;
-  readonly workerFiles: Array<{ name: string; content: Blob }>;
+  readonly workerFiles: ReadonlyArray<WorkerModule>;
   sandboxControllerAttempted: boolean;
   readonly owner: ApiEnv['Variables']['user'];
   workerUploadUrl: string | undefined;
@@ -237,6 +238,19 @@ export async function uploadDeploymentWorker(input: {
       session.buckets,
       assetsByHash,
     );
+    // Cloudflare holds the requested asset bytes now. Keep only the
+    // deploy-local cache buster, which a Durable Object snapshot stores, so
+    // asset bytes are not held through the Worker upload.
+    const deployLocalHashes = new Set(
+      Object.entries(assetManifest)
+        .filter(([path]) => path.startsWith('/.void-deploy/'))
+        .map(([, entry]) => entry.hash),
+    );
+    for (const hash of assetsByHash.keys()) {
+      if (!deployLocalHashes.has(hash)) {
+        assetsByHash.delete(hash);
+      }
+    }
     await assertDeploymentCanProceed(context.get('db'), deployment.id, projectId);
     logger.info('asset_upload', 'upload_complete', {
       hasCompletionJwt: completionJwt !== undefined,
@@ -267,7 +281,6 @@ export async function uploadDeploymentWorker(input: {
 
   input.currentStep = 'worker_upload';
   markPhase('worker_upload');
-  const workerFormData = new FormData();
   emit({ event: 'worker_upload', modules: workerFiles.length });
 
   // Reserved-name set lives in `../reserved-bindings.ts` so the secrets
@@ -403,26 +416,30 @@ export async function uploadDeploymentWorker(input: {
       assetsByHash,
     );
   }
-  workerFormData.append(
-    'metadata',
-    new Blob([JSON.stringify(metadata)], { type: 'application/json' }),
-  );
-  for (const file of workerFiles) {
-    workerFormData.append(file.name, file.content, file.name);
-  }
 
   input.workerUploadUrl = `https://api.cloudflare.com/client/v4/accounts/${context.env.CF_ACCOUNT_ID}/workers/dispatch/namespaces/${dispatchNamespace}/scripts/${workerName}`;
   await retryWithBackoff(
     async (attempt) => {
       const attemptStart = Date.now();
-      const cfResponse = await fetch(input.workerUploadUrl!, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${context.env.CF_API_TOKEN}`,
-          'User-Agent': platformAppUploadUserAgent(context.env),
-        },
-        body: workerFormData,
-      });
+      // A streamed body is sent once, so each attempt reopens the modules.
+      const upload = workerUploadBody(metadata, workerFiles);
+      let cfResponse: Response;
+      try {
+        cfResponse = await fetch(input.workerUploadUrl!, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${context.env.CF_API_TOKEN}`,
+            'User-Agent': platformAppUploadUserAgent(context.env),
+            'Content-Type': upload.contentType,
+          },
+          body: withKnownLength(upload.stream, upload.length),
+        });
+      } catch (error) {
+        // A module that fails its size or digest check stops the body before
+        // its closing boundary. Report that, not the transport error it causes;
+        // thrown errors are not retried.
+        throw upload.failure() ?? error;
+      }
 
       if (!cfResponse.ok) {
         const error = await cfResponse.text();
