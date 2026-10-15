@@ -255,14 +255,11 @@ export async function uploadedWorkerInputProblem(
 }
 
 /**
- * Record a Worker upload the CLI already put under `prefix` as durable input.
- * The bytes stay where they were uploaded; only the receipt marker is written.
- * A request never deletes this prefix itself: a retry of the same deploy
- * reuses it, so the admitted operation's input cleanup or the stale-input
- * sweep removes it.
+ * The durable input for a Worker upload the CLI already put under `prefix`,
+ * and its digest. Nothing is written, so a retry can match the operation that
+ * admitted this input after its cleanup deleted the prefix.
  */
-export async function recordUploadedDeploymentInput(
-  r2: R2Bucket,
+export async function uploadedDeploymentInput(
   prefix: string,
   body: Record<string, unknown>,
   modules: DeploymentInput['modules'],
@@ -270,9 +267,22 @@ export async function recordUploadedDeploymentInput(
 ) {
   const input = deploymentInputRecord(body, options);
   input.modules = modules;
-  const digest = await deploymentInputDigest(input);
-  await writeDeploymentInputReceipt(r2, prefix, options.appType, modules.length);
-  return { input, prefix, digest };
+  return { input, prefix, digest: await deploymentInputDigest(input) };
+}
+
+/**
+ * Record a Worker upload as durable input. The bytes stay where they were
+ * uploaded; only the receipt marker is written. A request never deletes this
+ * prefix itself: a retry of the same deploy reuses it, so the admitted
+ * operation's input cleanup or the stale-input sweep removes it.
+ */
+export async function recordUploadedDeploymentInput(
+  r2: R2Bucket,
+  uploaded: Awaited<ReturnType<typeof uploadedDeploymentInput>>,
+  appType: DeployManifest['type'],
+) {
+  await writeDeploymentInputReceipt(r2, uploaded.prefix, appType, uploaded.input.modules.length);
+  return uploaded;
 }
 
 export async function assertDeploymentExecutionAuthority(

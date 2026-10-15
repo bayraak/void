@@ -690,7 +690,12 @@ export class PlatformClient {
    * False when discovery omits the field or gave no usable answer.
    */
   async supportsDirectWorkerUpload(): Promise<boolean> {
-    const probe = await this.platformProbe();
+    let probe = await this.platformProbe();
+    if (probe.kind === 'unknown') {
+      // One failed probe must not send a large Worker inline. Ask again,
+      // without replacing the outcome the version check keeps.
+      probe = await this.probePlatformVersion();
+    }
     return probe.kind === 'version' && probe.directWorkerUpload;
   }
 

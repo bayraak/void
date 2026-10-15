@@ -1262,6 +1262,32 @@ describe('durable execution of directly uploaded Worker modules', () => {
     expect(await keys(prefix)).toEqual([]);
   });
 
+  it('returns the receipt for a retry after the operation deleted its upload', async () => {
+    const { workerInput, prefix } = await uploadWorker({ 'index.js': 'export default {};' });
+    const key = crypto.randomUUID();
+    const first = await post(key, workerPayload(workerInput));
+    const id = first.headers.get('x-void-deployment-id')!;
+    expect((await run(id)).ack).toHaveBeenCalledOnce();
+    expect(await getDeploymentOperation(env.db, id)).toMatchObject({
+      status: 'terminal',
+      inputs_deleted: true,
+    });
+    expect(await keys(prefix)).toEqual([]);
+
+    // A transport retry can arrive after execution. It gets the original
+    // receipt and writes nothing under the deleted upload.
+    const retry = await post(key, workerPayload(workerInput));
+    expect(retry.status).toBe(200);
+    expect(retry.headers.get('x-void-deployment-id')).toBe(id);
+    expect(await keys(prefix)).toEqual([]);
+    expect(await env.db.select().from(deploymentOperations)).toHaveLength(1);
+
+    // Different input under the same key still needs its own upload.
+    const changed = await post(key, { ...workerPayload(workerInput), commit: 'different-commit' });
+    expect(changed.status).toBe(400);
+    expect(await env.db.select().from(deploymentOperations)).toHaveLength(1);
+  });
+
   it('fails a queued Worker whose stored module changes after admission', async () => {
     const uploaded = vi.fn(async () => cfSuccess({}));
     mockCfApi({ uploadWorker: uploaded });

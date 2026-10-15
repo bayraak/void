@@ -197,4 +197,41 @@ describe('direct Worker upload discovery', () => {
       await expect(client().listProjectChoices()).resolves.toEqual([]);
     },
   );
+
+  it('asks discovery again when the cached answer was inconclusive', async () => {
+    let probes = 0;
+    serve(() =>
+      ++probes === 1
+        ? Response.json({ error: 'unavailable' }, { status: 503 })
+        : platformDiscoveryResponse(origin, undefined, { directWorkerUpload: true }),
+    );
+    await client().listProjectChoices();
+    await expect(client().supportsDirectWorkerUpload()).resolves.toBe(true);
+    // The version check keeps its first outcome.
+    await client().listProjects();
+    expect(requestedPaths()).toEqual([
+      '/.well-known/void-platform',
+      '/projects/choices',
+      '/.well-known/void-platform',
+      '/projects',
+    ]);
+  });
+
+  it('reports no support when discovery stays inconclusive', async () => {
+    serve(() => Response.json({ error: 'unavailable' }, { status: 503 }));
+    await client().listProjectChoices();
+    await expect(client().supportsDirectWorkerUpload()).resolves.toBe(false);
+    expect(requestedPaths()).toEqual([
+      '/.well-known/void-platform',
+      '/projects/choices',
+      '/.well-known/void-platform',
+    ]);
+  });
+
+  it('does not ask again when discovery omits the field', async () => {
+    serveFeatures({});
+    await client().listProjectChoices();
+    await expect(client().supportsDirectWorkerUpload()).resolves.toBe(false);
+    expect(requestedPaths()).toEqual(['/.well-known/void-platform', '/projects/choices']);
+  });
 });

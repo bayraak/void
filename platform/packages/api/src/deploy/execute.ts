@@ -31,6 +31,7 @@ import {
   installationDeploymentAdmissionClosed,
   prepareDeploymentInput,
   recordUploadedDeploymentInput,
+  uploadedDeploymentInput,
   uploadedWorkerInputProblem,
   type DeploymentInput,
 } from '../deployment-execution.ts';
@@ -669,6 +670,38 @@ export async function handleManifestOnlyDeploy(context: Context<ApiEnv>): Promis
   if (workerFilesProblem) {
     return context.json({ event: 'error', message: workerFilesProblem }, 400);
   }
+  const durable = !execution && context.env.DEPLOYMENTS_QUEUE !== undefined;
+  const idempotencyKey = context.req.header('x-void-deploy-idempotency-key') ?? crypto.randomUUID();
+  if (durable && !/^[A-Za-z0-9_-]{1,128}$/.test(idempotencyKey)) {
+    return context.json({ error: 'invalid deployment idempotency key' }, 400);
+  }
+  const inputOptions = {
+    appType: incomingManifest.type,
+    credentialId: context.get('deployCredential'),
+    oauthApproval: context.get('oauthApproval'),
+  };
+  const uploadedInput =
+    durable && workerInput
+      ? await uploadedDeploymentInput(uploadPrefix!, body, uploadedModules, inputOptions)
+      : null;
+  if (uploadedInput) {
+    // A retry of an admitted deploy gets its receipt even after the
+    // operation's input cleanup deleted the upload. The precheck below
+    // rejects the same key with different input.
+    const existing = await findDeploymentOperation(
+      context.get('db'),
+      projectId,
+      actor.id,
+      idempotencyKey,
+    );
+    if (
+      existing &&
+      existing.input_digest === uploadedInput.digest &&
+      existing.build_id === (deployBuild ?? null)
+    ) {
+      return deploymentReceiptResponse(context.get('db'), existing.id);
+    }
+  }
   if (workerInput) {
     const uploadProblem = await uploadedWorkerInputProblem(
       context.env.STATIC_ASSETS_R2,
@@ -685,25 +718,13 @@ export async function handleManifestOnlyDeploy(context: Context<ApiEnv>): Promis
   // reaper, placeholder insert. Once the placeholder row exists, every
   // later failure must route through the catch / finally below to avoid
   // leaving it stranded in `pending`.
-  const durable = !execution && context.env.DEPLOYMENTS_QUEUE !== undefined;
-  const idempotencyKey = context.req.header('x-void-deploy-idempotency-key') ?? crypto.randomUUID();
-  if (durable && !/^[A-Za-z0-9_-]{1,128}$/.test(idempotencyKey)) {
-    return context.json({ error: 'invalid deployment idempotency key' }, 400);
-  }
-  const inputOptions = {
-    appType: incomingManifest.type,
-    credentialId: context.get('deployCredential'),
-    oauthApproval: context.get('oauthApproval'),
-  };
   const stagedInput = !durable
     ? null
-    : workerInput
+    : uploadedInput
       ? await recordUploadedDeploymentInput(
           context.env.STATIC_ASSETS_R2,
-          uploadPrefix!,
-          body,
-          uploadedModules,
-          inputOptions,
+          uploadedInput,
+          incomingManifest.type,
         )
       : await prepareDeploymentInput(
           context.env.STATIC_ASSETS_R2,
