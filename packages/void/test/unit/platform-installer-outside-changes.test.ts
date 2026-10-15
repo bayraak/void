@@ -22,6 +22,13 @@ vi.mock('@voidzero-dev/vite-plus-prompts', async (importOriginal) => {
   return { ...actual, confirm: vi.fn(), log: { ...actual.log, step: vi.fn() }, note: vi.fn() };
 });
 
+// Record the waits before a read is done again, and do not wait.
+const wait = vi.hoisted(() => vi.fn(async (_milliseconds: number) => {}));
+vi.mock('node:timers/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:timers/promises')>()),
+  setTimeout: wait,
+}));
+
 import { confirm, log, note } from '@voidzero-dev/vite-plus-prompts';
 import {
   PlatformCloudflareApiError,
@@ -231,22 +238,15 @@ describe('Worker change source', () => {
 });
 
 describe('platform Workers changed outside Void', () => {
-  const sources = new Map<string, string | null | Error>();
-  const getWorkerLastDeployedFrom = vi.fn(async (_account: string, name: string) => {
-    const source = sources.get(name) ?? 'cf_cli';
-    if (source instanceof Error) {
-      throw source;
-    }
-    return source;
-  });
+  const sources = new Map<string, string | null>();
+  const getWorkerLastDeployedFrom = vi.fn(
+    async (_account: string, name: string) => sources.get(name) ?? 'cf_cli',
+  );
   // The message of each Worker's active version. By default, Void deployed it.
-  const activeMessages = new Map<string, string | undefined | Error>();
+  const activeMessages = new Map<string, string | undefined>();
   const readCloudflare = vi.fn(async (path: string): Promise<unknown> => {
     const name = /\/workers\/scripts\/([^/]+)\//.exec(path)?.[1] ?? '';
     const message = activeMessages.has(name) ? activeMessages.get(name) : recordedMessage;
-    if (message instanceof Error) {
-      throw message;
-    }
     return activeVersionReads(name, message)(path);
   });
   const client = {
@@ -264,7 +264,6 @@ describe('platform Workers changed outside Void', () => {
     sources.set(names.apiWorker, 'dash');
     sources.set(names.proxyWorker, 'api');
     sources.set(names.tailWorker, null);
-    sources.set(names.dispatchWorker, new PlatformCloudflareApiError('Internal error', 500));
     const plan = installPlan([
       ...allWorkers.slice(0, 4),
       worker('dispatch-worker', names.dispatchWorker, 'reuse'),
@@ -297,17 +296,10 @@ describe('platform Workers changed outside Void', () => {
     // Void wrote this older record, which has no triggers. The upgrade refuses it too.
     sources.set(names.tailWorker, null);
     activeMessages.set(names.tailWorker, 'void:{"schema":1,"migrations":[]}');
-    // The marker already shows the change, so the version is not read.
+    // The marker already shows the change, so the version is not read. The
+    // deployments are read: the deploy needs one active version.
     sources.set(names.apiWorker, 'dash');
     activeMessages.set(names.apiWorker, undefined);
-    // A failed read does not show a change. When the marker is unknown, it is
-    // not known whether the Cloudflare CLI asks, so the version is not read.
-    sources.set(names.dispatchWorker, new PlatformCloudflareApiError('Internal error', 500));
-    activeMessages.set(names.dispatchWorker, undefined);
-    activeMessages.set(
-      names.emailGatewayWorker,
-      new PlatformCloudflareApiError('Internal error', 500),
-    );
 
     await expect(
       findPlatformWorkerOutsideChanges(client, installPlan(allWorkers), runtime, installed),
@@ -317,8 +309,9 @@ describe('platform Workers changed outside Void', () => {
       { key: 'tail', name: names.tailWorker, source: 'unrecorded' },
     ]);
     const reads = readCloudflare.mock.calls.map(([path]) => path);
-    expect(reads.filter((path) => path.includes(`/${names.apiWorker}/`))).toEqual([]);
-    expect(reads.filter((path) => path.includes(`/${names.dispatchWorker}/`))).toEqual([]);
+    expect(reads.filter((path) => path.includes(`/${names.apiWorker}/`))).toEqual([
+      `/accounts/account/workers/scripts/${names.apiWorker}/deployments`,
+    ]);
     expect(reads.filter((path) => path.includes(`/${names.proxyWorker}/`))).toEqual([
       `/accounts/account/workers/scripts/${names.proxyWorker}/deployments`,
       `/accounts/account/workers/scripts/${names.proxyWorker}/versions/22222222-2222-4222-8222-222222222222`,
@@ -343,6 +336,141 @@ describe('platform Workers changed outside Void', () => {
     expect(getWorkerLastDeployedFrom.mock.calls.map(([, name]) => name)).not.toContain(
       names.emailGatewayWorker,
     );
+  });
+
+  describe('when Void cannot read a Worker', () => {
+    type Read = 'source' | 'deployments' | 'version';
+    const failure = (status: number) => new PlatformCloudflareApiError('Cloudflare error', status);
+    const notReadable = (answer: string) =>
+      `platform: Void cannot read the platform Worker ${names.apiWorker} (${answer}), so it cannot find changes made outside Void. No platform Worker changed. This command did not pause application traffic.`;
+    /** Each read takes the next answer of its kind, then the answer of a Worker that Void deployed. */
+    const find = (answers: Partial<Record<Read, Array<unknown>>>) => {
+      const reads: Array<Read> = [];
+      const recorded = activeVersionReads(names.apiWorker, recordedMessage);
+      const answer = async (read: Read, otherwise: () => Promise<unknown>) => {
+        reads.push(read);
+        const next = answers[read]?.length ? answers[read].shift() : otherwise;
+        if (next instanceof Error) {
+          throw next;
+        }
+        return typeof next === 'function' ? (next as () => Promise<unknown>)() : next;
+      };
+      return {
+        reads,
+        result: findPlatformWorkerOutsideChanges(
+          {
+            getWorkerLastDeployedFrom: async () =>
+              (await answer('source', async () => 'cf_cli')) as string | null,
+            request: async <T>(path: string) =>
+              (await answer(path.endsWith('/deployments') ? 'deployments' : 'version', () =>
+                recorded(path),
+              )) as T,
+          },
+          installPlan([worker('api-worker', names.apiWorker)]),
+          runtime,
+          installed,
+        ),
+      };
+    };
+
+    it.each([
+      {
+        name: 'Cloudflare refuses the token',
+        answers: { source: [failure(403)] },
+        reads: ['source'],
+        waits: [],
+        message: `${notReadable('HTTP 403')} Make sure that the Cloudflare API token has Account → Workers Scripts → Edit for this account. Then run the command again.`,
+      },
+      {
+        name: 'Cloudflare fails three times',
+        answers: { source: [failure(500), failure(502), failure(500)] },
+        reads: ['source', 'source', 'source'],
+        waits: [[250], [500]],
+        message: `${notReadable('HTTP 500')} Run the command again.`,
+      },
+      {
+        name: 'the network fails three times',
+        answers: { deployments: [1, 2, 3].map(() => new TypeError('fetch failed')) },
+        reads: ['source', 'deployments', 'deployments', 'deployments'],
+        waits: [[250], [500]],
+        message: `${notReadable('no HTTP response: fetch failed')} Run the command again.`,
+      },
+      {
+        name: 'the version read fails',
+        answers: { version: [failure(404)] },
+        reads: ['source', 'deployments', 'version'],
+        waits: [],
+        message: `${notReadable('HTTP 404')} Run the command again.`,
+      },
+      {
+        name: 'the deployment data is malformed',
+        answers: { deployments: [{ deployments: [{ versions: [{ percentage: 100 }] }] }] },
+        reads: ['source', 'deployments'],
+        waits: [],
+        message: `platform: Cloudflare returned malformed deployment data for the platform Worker ${names.apiWorker}, so Void cannot find changes made outside Void. No platform Worker changed. This command did not pause application traffic. Run the command again.`,
+      },
+      {
+        // The deploy refuses this deployment after it paused traffic.
+        name: 'no version gets all traffic',
+        answers: {
+          source: ['dash'],
+          deployments: [
+            {
+              deployments: [
+                {
+                  versions: [
+                    { version_id: '22222222-2222-4222-8222-222222222222', percentage: 90 },
+                    { version_id: '33333333-3333-4333-8333-333333333333', percentage: 10 },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        reads: ['source', 'deployments'],
+        waits: [],
+        message: `platform: The platform Worker ${names.apiWorker} has no single version that gets 100% of traffic, for example after a gradual deployment. This command deploys a new version only when one version gets all traffic. No platform Worker changed. This command did not pause application traffic. In the Cloudflare dashboard, deploy one version of ${names.apiWorker} to 100% of traffic. Then run this command once in a terminal, so that you can approve the dashboard change.`,
+      },
+    ] satisfies ReadonlyArray<{
+      name: string;
+      answers: Partial<Record<Read, Array<unknown>>>;
+      reads: ReadonlyArray<Read>;
+      waits: ReadonlyArray<readonly [number]>;
+      message: string;
+    }>)('stops when $name', async ({ answers, reads, waits, message }) => {
+      const found = find(answers);
+
+      await expect(found.result).rejects.toThrow(message);
+      expect(found.reads).toEqual(reads);
+      // Void reads again only after a failure that can pass.
+      expect(wait.mock.calls).toEqual(waits);
+    });
+
+    it('reads again after a rate limit and continues', async () => {
+      const found = find({ source: [failure(429)] });
+
+      await expect(found.result).resolves.toEqual([]);
+      expect(found.reads).toEqual(['source', 'source', 'deployments', 'version']);
+      expect(wait.mock.calls).toEqual([[250]]);
+    });
+
+    it('shows no change for a Worker that does not exist', async () => {
+      // Cloudflare answers HTTP 404, and the source read then gives null.
+      const found = find({ source: [null], deployments: [failure(404)] });
+
+      await expect(found.result).resolves.toEqual([]);
+      expect(found.reads).toEqual(['source', 'deployments']);
+      expect(wait).not.toHaveBeenCalled();
+    });
+
+    it('keeps a change made outside Void when the deployments read gives 404', async () => {
+      const found = find({ source: ['dash'], deployments: [failure(404)] });
+
+      await expect(found.result).resolves.toEqual([
+        { key: 'api', name: names.apiWorker, source: 'dash' },
+      ]);
+      expect(found.reads).toEqual(['source', 'deployments']);
+    });
   });
 
   describe('after a run stopped during a Worker cutover', () => {
@@ -496,8 +624,9 @@ describe('platform Workers changed outside Void', () => {
           `${names.apiWorker}: changed in the Cloudflare dashboard`,
           `${names.proxyWorker}: has an active version without a Void deployment record`,
           `${names.tailWorker}: changed in the Cloudflare API`,
-          // An earlier run can have paused traffic. This one did not.
-          'Nothing changed. This command did not pause application traffic.',
+          // An earlier run can have paused traffic. This one did not. The
+          // lifecycle lock can have changed the database.
+          'No platform Worker changed. This command did not pause application traffic.',
           'This command replaces their configuration with the Void configuration. It can ask for your approval only in a terminal.',
           'Run this command once in a terminal to review them:',
           'void platform upgrade example-a1b2c3d4',
@@ -510,7 +639,7 @@ describe('platform Workers changed outside Void', () => {
       sources.set(names.apiWorker, 'api');
       vi.mocked(confirm).mockResolvedValueOnce(false);
       await expect(review(true)).rejects.toThrow(
-        'platform: Cancelled. Nothing changed. This command did not pause application traffic.',
+        'platform: Cancelled. No platform Worker changed. This command did not pause application traffic.',
       );
       expect(confirm).toHaveBeenCalledWith({
         message: 'Replace the configuration of these Workers?',

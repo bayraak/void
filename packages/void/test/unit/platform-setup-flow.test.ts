@@ -2005,6 +2005,23 @@ describe('platform credential onboarding', () => {
     const source = vi
       .spyOn(PlatformCloudflareClient.prototype, 'getWorkerLastDeployedFrom')
       .mockResolvedValue('api');
+    // The deploy needs one active version, so the check reads the deployments.
+    const request = vi
+      .spyOn(PlatformCloudflareClient.prototype, 'request')
+      .mockImplementation(async (path: string) => {
+        if (path.endsWith(`/${manifest.deployment.resources.apiWorker}/deployments`)) {
+          return {
+            deployments: [
+              {
+                id: 'deployment',
+                created_on: '2026-10-15T00:00:00.000Z',
+                versions: [{ version_id: '11111111-1111-4111-8111-111111111111', percentage: 100 }],
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected read ${path}`);
+      });
 
     await expect(
       runPlatformLifecycleCommand(
@@ -2012,10 +2029,11 @@ describe('platform credential onboarding', () => {
       ),
     ).rejects.toThrow(
       new RegExp(
-        `Nothing changed\\. This command did not pause application traffic\\.[\\s\\S]*platform install --resume --name ${manifest.id}$`,
+        `No platform Worker changed\\. This command did not pause application traffic\\.[\\s\\S]*platform install --resume --name ${manifest.id}$`,
       ),
     );
     expect(source).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
     expect(mocks.install).not.toHaveBeenCalled();
   });
   it('uploads a resumed install’s Worker changed outside Void when the installer asks', async () => {

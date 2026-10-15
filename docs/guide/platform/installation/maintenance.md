@@ -149,7 +149,7 @@ Let running rotations finish before you roll back. If an older proxy runs next t
 
 Void manages the platform's own Workers. Do not change them in the Cloudflare dashboard or with the Cloudflare API. To change the platform, use the Void commands on this page.
 
-`upgrade`, `repair`, `enable`, `rollback`, and `install --resume` deploy the platform Workers again. Before they change anything, Void finds each platform Worker that:
+`upgrade`, `repair`, `enable`, `rollback`, and `install --resume` deploy the platform Workers again. Before they change a platform Worker or pause traffic, Void finds each platform Worker that:
 
 - was changed in the Cloudflare dashboard or with the Cloudflare API.
 - has an active version without a Void deployment record. This can occur when an earlier run replaced a change made outside Void, and then stopped or failed. If that run stopped during the cutover to the new version, the command first makes the earlier versions active again. Void checks those earlier versions too. A version that an older Void release deployed can also have no record.
@@ -158,14 +158,16 @@ The `--plan` preview of `upgrade`, `repair`, `enable`, and `rollback` shows the 
 
 In a terminal, Void lists these Workers and asks **Replace the configuration of these Workers?** The default answer is No.
 
-- If you answer No, the command stops. Nothing changed, and the command did not pause traffic.
+- If you answer No, the command stops. No platform Worker changed, and the command did not pause traffic.
 - If you answer Yes, the command continues. First, Void prepares the platform resources and the database. Then, before it pauses traffic or deploys a Worker, the Cloudflare CLI asks you again for each Worker changed in the dashboard or with the API. For a dashboard change, it shows the differences. Void uploads a new version of each of these Workers and does not deploy it yet. For a Worker that has an active version without a Void deployment record, the Cloudflare CLI does not ask again.
 
 If you refuse in the Cloudflare CLI, the command stops. Void does not undo the resource and database changes. No deployment changed, and the command did not pause traffic.
 
 The replacement removes values that Void does not set, for example an `EMAIL_FROM` variable that you added. It also resets values that Void sets, for example `AUTH_REDIRECT_URI`.
 
-Without a terminal, for example in CI, or with `--yes`, the command stops before it changes anything, and it does not pause traffic. Run the command that Void prints once in a terminal, and answer the questions there. After that run completes, the command works in CI again.
+Without a terminal, for example in CI, or with `--yes`, the command stops before it changes a platform Worker, and it does not pause traffic. Run the command that Void prints once in a terminal, and answer the questions there. After that run completes, the command works in CI again.
+
+If Void cannot read a platform Worker, the command also stops before it changes a platform Worker or pauses traffic. Run the command again. If a platform Worker has no single version that gets 100% of traffic, for example after a gradual deployment, deploy one version of it to 100% of traffic in the Cloudflare dashboard. Then run the command once in a terminal, so that you can approve the dashboard change.
 
 If an earlier run failed after it paused traffic, traffic stays paused after these stops. To resume traffic, see [Upgrade the platform](#upgrade-the-platform).
 

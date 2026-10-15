@@ -47,6 +47,13 @@ const state = vi.hoisted(() => ({
     resume: vi.fn(),
   },
   runtime: undefined as ReturnType<typeof resolvePlatformRuntime> | undefined,
+  wait: vi.fn(),
+}));
+
+// Do not wait before a read is done again.
+vi.mock('node:timers/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:timers/promises')>()),
+  setTimeout: state.wait,
 }));
 
 vi.mock('../../src/cli/output.ts', async (importOriginal) => ({
@@ -290,6 +297,7 @@ describe('installed platform upgrade', () => {
     state.listWorkerNames.mockReset().mockResolvedValue([]);
     state.request.mockReset().mockResolvedValue({ name: 'assets' });
     state.getWorkerLastDeployedFrom.mockReset().mockResolvedValue('cf_cli');
+    state.wait.mockReset().mockResolvedValue(undefined);
     state.cfRunner.mockReset();
     vi.mocked(readInstallationRecoverySecrets).mockReturnValue({
       databaseUrl: 'postgres://database',
@@ -1130,6 +1138,7 @@ describe('installed platform upgrade', () => {
 
   describe('platform Workers changed outside Void', () => {
     const apiWorker = () => state.manifest!.deployment.resources.apiWorker;
+    const activeVersion = '44444444-4444-4444-8444-444444444444';
     const withApiWorker = () => {
       const original = vi.mocked(createPlatformInstallPlan).getMockImplementation()!;
       vi.mocked(createPlatformInstallPlan).mockImplementationOnce(async (...args) => {
@@ -1149,6 +1158,35 @@ describe('installed platform upgrade', () => {
           ],
         };
       });
+      // Void deployed the active version of the API Worker.
+      state.request.mockImplementation(async (path: string) => {
+        if (path.endsWith(`/${apiWorker()}/deployments`)) {
+          return {
+            deployments: [
+              {
+                id: 'deployment',
+                created_on: '2026-09-14T00:00:03.000Z',
+                versions: [{ version_id: activeVersion, percentage: 100 }],
+              },
+            ],
+          };
+        }
+        if (path.endsWith(`/versions/${activeVersion}`)) {
+          return {
+            annotations: {
+              'workers/message': encodeCloudflareVersionMessage([], {
+                workers_dev: true,
+                preview_urls: false,
+                routes: [],
+                crons: [],
+                queueConsumers: [],
+                workflows: [],
+              }),
+            },
+          };
+        }
+        return { name: 'assets' };
+      });
     };
     const gateWrites = () => state.events.filter((event) => event.startsWith('put:'));
 
@@ -1162,7 +1200,7 @@ describe('installed platform upgrade', () => {
       );
       expect(error).toBeInstanceOf(Error);
       expect(error?.message).toContain(
-        `These platform Workers need your approval before this command replaces their configuration:\n${apiWorker()}: changed in the Cloudflare dashboard\nNothing changed. This command did not pause application traffic.`,
+        `These platform Workers need your approval before this command replaces their configuration:\n${apiWorker()}: changed in the Cloudflare dashboard\nNo platform Worker changed. This command did not pause application traffic.`,
       );
       expect(error?.message).toContain(
         `Run this command once in a terminal to review them:\nvoid platform upgrade ${state.manifest!.id}`,
@@ -1205,6 +1243,104 @@ describe('installed platform upgrade', () => {
       );
       expect(installPlatform).not.toHaveBeenCalled();
       expect(state.events).toEqual([]);
+    });
+
+    describe('when Void cannot read the Worker', () => {
+      const failure = (status: number) =>
+        new PlatformCloudflareApiError('Cloudflare error', status);
+      /** Answer the reads of one path with these answers, and the other reads as before. */
+      const answer = (suffix: () => string, reply: () => Promise<unknown>) => {
+        const original = state.request.getMockImplementation()!;
+        state.request.mockImplementation(async (path: string) =>
+          path.endsWith(suffix()) ? reply() : original(path),
+        );
+      };
+      const reads = (suffix: string) =>
+        state.request.mock.calls.filter(([path]) => String(path).endsWith(suffix)).length;
+
+      it.each([
+        {
+          name: 'Cloudflare refuses the token',
+          fail: () => state.getWorkerLastDeployedFrom.mockRejectedValue(failure(403)),
+          attempts: () => state.getWorkerLastDeployedFrom.mock.calls.length,
+          expected: { attempts: 1, message: '(HTTP 403)' },
+        },
+        {
+          name: 'Cloudflare fails three times',
+          fail: () => state.getWorkerLastDeployedFrom.mockRejectedValue(failure(500)),
+          attempts: () => state.getWorkerLastDeployedFrom.mock.calls.length,
+          expected: { attempts: 3, message: '(HTTP 500)' },
+        },
+        {
+          name: 'the network fails three times',
+          fail: () =>
+            answer(
+              () => `/${apiWorker()}/deployments`,
+              async () => {
+                throw new TypeError('fetch failed');
+              },
+            ),
+          attempts: () => reads(`/${apiWorker()}/deployments`),
+          expected: { attempts: 3, message: '(no HTTP response: fetch failed)' },
+        },
+        {
+          name: 'the deployment data is malformed',
+          fail: () =>
+            answer(
+              () => `/${apiWorker()}/deployments`,
+              async () => ({ deployments: {} }),
+            ),
+          attempts: () => reads(`/${apiWorker()}/deployments`),
+          expected: { attempts: 1, message: 'Cloudflare returned malformed deployment data' },
+        },
+        {
+          name: 'the version read fails three times',
+          fail: () =>
+            answer(
+              () => `/versions/${activeVersion}`,
+              async () => {
+                throw failure(503);
+              },
+            ),
+          attempts: () => reads(`/versions/${activeVersion}`),
+          expected: { attempts: 3, message: '(HTTP 503)' },
+        },
+      ])('stops before the installer when $name', async ({ fail, attempts, expected }) => {
+        withApiWorker();
+        fail();
+
+        const error = await upgrade().then(
+          () => null,
+          (failure: unknown) => failure as Error,
+        );
+
+        expect(error?.message).toContain(apiWorker());
+        expect(error?.message).toContain(expected.message);
+        expect(error?.message).toContain(
+          'No platform Worker changed. This command did not pause application traffic.',
+        );
+        expect(error?.message).toMatch(/run the command again\.$/i);
+        expect(attempts()).toBe(expected.attempts);
+        expect(installPlatform).not.toHaveBeenCalled();
+        expect(state.progress.start).not.toHaveBeenCalled();
+        expect(gateWrites()).toEqual([]);
+        expect(state.cfRunner).not.toHaveBeenCalled();
+      });
+
+      it('reads again after a rate limit and runs', async () => {
+        withApiWorker();
+        state.getWorkerLastDeployedFrom
+          .mockRejectedValueOnce(failure(429))
+          .mockResolvedValue('cf_cli');
+
+        await upgrade();
+
+        expect(state.getWorkerLastDeployedFrom).toHaveBeenCalledTimes(2);
+        expect(installPlatform).toHaveBeenCalledOnce();
+        expect(vi.mocked(installPlatform).mock.calls[0]![3]).not.toHaveProperty(
+          'replaceOutsideChanges',
+        );
+      });
     });
 
     describe('after a run stopped during a Worker cutover', () => {
@@ -1272,7 +1408,7 @@ describe('installed platform upgrade', () => {
         );
 
         expect(error?.message).toContain(
-          `${apiWorker()}: has an active version without a Void deployment record\nNothing changed.`,
+          `${apiWorker()}: has an active version without a Void deployment record\nNo platform Worker changed.`,
         );
         expect(state.request).toHaveBeenCalledWith(
           `/accounts/account/workers/scripts/${apiWorker()}/versions/${earlierVersion}`,

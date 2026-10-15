@@ -1,12 +1,16 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { PlatformInstallationManifest } from '@void/platform';
 import type { PlatformRuntime } from '@void/platform/installer';
 import { confirm, isCancel, log, type SpinnerResult } from '@voidzero-dev/vite-plus-prompts';
 import { note } from './output.ts';
-import type { PlatformCloudflareClient } from './platform-cloudflare.ts';
+import {
+  PlatformCloudflareApiError,
+  type PlatformCloudflareClient,
+} from './platform-cloudflare.ts';
 import { interruptedWorkerCutover } from './platform-installer-cutover.ts';
 import {
-  activePlatformWorkerHasTriggerRecord,
   platformWorkerVersionHasTriggerRecord,
+  readActivePlatformWorkerDeployment,
 } from './platform-installer-inspection.ts';
 import { runPlatformWranglerAtApiBase } from './platform-installer-process.ts';
 import type {
@@ -40,6 +44,52 @@ const PLATFORM_WORKER_KEYS: ReadonlyArray<PlatformWorkerKey> = [
   'tail',
   'dispatch',
 ];
+
+// The lifecycle lock can change the database before this check. The check
+// itself changes no Worker and does not pause traffic.
+const NO_WORKER_CHANGED =
+  'No platform Worker changed. This command did not pause application traffic.';
+
+/** The wait before the second and the third read of a Worker. */
+const READ_RETRY_DELAYS_MS = [250, 500] as const;
+
+/** Stop before the run changes a Worker, because Void cannot tell what the run replaces. */
+function unreadablePlatformWorker(workerName: string, error: unknown): Error {
+  const status = error instanceof PlatformCloudflareApiError ? error.status : null;
+  const answer =
+    status === null
+      ? `no HTTP response: ${error instanceof Error ? error.message : String(error)}`
+      : `HTTP ${status}`;
+  return new Error(
+    [
+      `platform: Void cannot read the platform Worker ${workerName} (${answer}), so it cannot find changes made outside Void.`,
+      NO_WORKER_CHANGED,
+      status === 401 || status === 403
+        ? 'Make sure that the Cloudflare API token has Account → Workers Scripts → Edit for this account. Then run the command again.'
+        : 'Run the command again.',
+    ].join(' '),
+    { cause: error },
+  );
+}
+
+/**
+ * Read a Worker again after a rate limit, a Cloudflare server error or a
+ * network failure. Each other failure, or a third failure, stops the run.
+ */
+async function readPlatformWorker<T>(workerName: string, read: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      const status = error instanceof PlatformCloudflareApiError ? error.status : null;
+      const wait = READ_RETRY_DELAYS_MS[attempt];
+      if (wait === undefined || (status !== null && status !== 429 && status < 500)) {
+        throw unreadablePlatformWorker(workerName, error);
+      }
+      await delay(wait);
+    }
+  }
+}
 
 export type PlatformWorkerOutsideChange = Readonly<{
   key: PlatformWorkerKey;
@@ -115,35 +165,59 @@ export async function findPlatformWorkerOutsideChanges(
       : new Map<string, string>();
   const changes = await Promise.all(
     workers.map(async (worker): Promise<PlatformWorkerOutsideChange | null> => {
-      // A failed read does not show a change. The upload still reports a real conflict.
-      let source: string | null;
-      try {
-        source = await client.getWorkerLastDeployedFrom(plan.account.id, worker.name);
-      } catch {
-        return null;
+      // A read that fails stops the run. Without the answer, the run can
+      // pause traffic and then fail in the Cloudflare CLI or the upgrade.
+      const readCloudflare = (path: string) =>
+        readPlatformWorker(worker.name, () => client.request<unknown>(path));
+      const source = await readPlatformWorker(worker.name, () =>
+        client.getWorkerLastDeployedFrom(plan.account.id, worker.name),
+      );
+      const deployments = await readPlatformWorker(worker.name, () =>
+        client
+          .request<unknown>(
+            `/accounts/${encodeURIComponent(plan.account.id)}/workers/scripts/${encodeURIComponent(worker.name)}/deployments`,
+          )
+          .catch((error: unknown) => {
+            if (error instanceof PlatformCloudflareApiError && error.status === 404) {
+              return null;
+            }
+            throw error;
+          }),
+      );
+      // No deployments. The installer finds a missing Worker itself, but a
+      // marker from outside Void still makes the Cloudflare CLI stop.
+      if (deployments === null) {
+        return source === 'dash' || source === 'api' ? { ...worker, source } : null;
+      }
+      const active = readActivePlatformWorkerDeployment(deployments);
+      if (active.kind === 'malformed') {
+        throw new Error(
+          `platform: Cloudflare returned malformed deployment data for the platform Worker ${worker.name}, so Void cannot find changes made outside Void. ${NO_WORKER_CHANGED} Run the command again.`,
+        );
+      }
+      // The deploy and the restore of a stopped cutover need one active version.
+      if (active.kind === 'split') {
+        throw new Error(
+          `platform: The platform Worker ${worker.name} has no single version that gets 100% of traffic, for example after a gradual deployment. This command deploys a new version only when one version gets all traffic. ${NO_WORKER_CHANGED} In the Cloudflare dashboard, deploy one version of ${worker.name} to 100% of traffic. Then run this command once in a terminal, so that you can approve the dashboard change.`,
+        );
       }
       if (source === 'dash' || source === 'api') {
         return { ...worker, source };
       }
       // The upgrade reads the active version. After a stopped cutover, the
       // installer first makes the earlier version active again.
-      const readCloudflare = (path: string) => client.request(path);
       const restoredVersion = restored.get(worker.name);
-      const recorded = await Promise.all([
-        activePlatformWorkerHasTriggerRecord(readCloudflare, plan.account.id, worker.name).catch(
-          () => null,
+      const recorded = await Promise.all(
+        [active.versionId, ...(restoredVersion === undefined ? [] : [restoredVersion])].map(
+          (versionId) =>
+            platformWorkerVersionHasTriggerRecord(
+              readCloudflare,
+              plan.account.id,
+              worker.name,
+              versionId,
+            ),
         ),
-        ...(restoredVersion === undefined
-          ? []
-          : [
-              platformWorkerVersionHasTriggerRecord(
-                readCloudflare,
-                plan.account.id,
-                worker.name,
-                restoredVersion,
-              ).catch(() => null),
-            ]),
-      ]);
+      );
       return recorded.includes(false) ? { ...worker, source: 'unrecorded' } : null;
     }),
   );
@@ -167,10 +241,10 @@ export function formatPlatformWorkerOutsideChanges(
 }
 
 /**
- * Do this before a run changes anything. When platform Workers were changed
- * outside Void, stop, or ask the operator in a terminal. Returns the Workers
- * whose outside changes the operator agreed to replace. The installer uploads
- * them later with uploadPlatformWorkerOutsideChanges.
+ * Do this before a run changes a Worker or pauses traffic. When platform
+ * Workers were changed outside Void, stop, or ask the operator in a terminal.
+ * Returns the Workers whose outside changes the operator agreed to replace.
+ * The installer uploads them later with uploadPlatformWorkerOutsideChanges.
  */
 export async function reviewPlatformWorkerOutsideChanges(
   input: Readonly<{
@@ -197,7 +271,7 @@ export async function reviewPlatformWorkerOutsideChanges(
     throw new Error(
       [
         `platform: ${formatPlatformWorkerOutsideChanges(changes)}`,
-        'Nothing changed. This command did not pause application traffic.',
+        NO_WORKER_CHANGED,
         'This command replaces their configuration with the Void configuration. It can ask for your approval only in a terminal.',
         `Run this command once in a terminal to review them:\n${input.command}`,
       ].join('\n'),
@@ -225,9 +299,7 @@ export async function reviewPlatformWorkerOutsideChanges(
     initialValue: false,
   });
   if (isCancel(answer) || typeof answer === 'symbol' || !answer) {
-    throw new Error(
-      'platform: Cancelled. Nothing changed. This command did not pause application traffic.',
-    );
+    throw new Error(`platform: Cancelled. ${NO_WORKER_CHANGED}`);
   }
   return changes;
 }

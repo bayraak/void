@@ -56,45 +56,52 @@ export async function readActivePlatformWorkerVersion(
 }
 
 /**
- * Whether the active version of a platform Worker has Void's record of its
- * triggers. An upgrade refuses an active version without it, for example a
- * version deployed outside Void. This reads the active version as
- * readActivePlatformWorkerVersion does, but through the Cloudflare API. Null
- * when the Worker has no single active version.
+ * The active version in a Cloudflare API answer for the deployments of a
+ * platform Worker. deployPlatformWorker continues only when the latest
+ * deployment sends all traffic to one version (deploymentRunsOnlyVersion).
+ * `split` is each other answer, for example a gradual deployment.
  */
-export async function activePlatformWorkerHasTriggerRecord(
-  readCloudflare: (path: string) => Promise<unknown>,
-  accountId: string,
-  workerName: string,
-): Promise<boolean | null> {
-  const base = `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(workerName)}`;
-  const response = await readCloudflare(`${base}/deployments`);
+export function readActivePlatformWorkerDeployment(
+  response: unknown,
+):
+  | Readonly<{ kind: 'active'; versionId: string }>
+  | Readonly<{ kind: 'malformed' }>
+  | Readonly<{ kind: 'split' }> {
   const deployments =
-    response && typeof response === 'object'
+    response && typeof response === 'object' && !Array.isArray(response)
       ? (response as { deployments?: unknown }).deployments
       : null;
-  const latest = Array.isArray(deployments) ? (deployments[0] as unknown) : null;
+  if (!Array.isArray(deployments)) {
+    return { kind: 'malformed' };
+  }
+  if (deployments.length === 0) {
+    return { kind: 'split' };
+  }
+  const latest: unknown = deployments[0];
   const versions =
     latest && typeof latest === 'object' ? (latest as { versions?: unknown }).versions : null;
-  const active = Array.isArray(versions)
-    ? versions.filter(
-        (entry) =>
-          entry &&
-          typeof entry === 'object' &&
-          Number((entry as { percentage?: unknown }).percentage) === 100,
-      )
-    : [];
-  const versionId =
-    active.length === 1 ? (active[0] as { version_id?: unknown }).version_id : undefined;
-  if (typeof versionId !== 'string') {
-    return null;
+  if (
+    !Array.isArray(versions) ||
+    versions.some(
+      (version) =>
+        !version ||
+        typeof version !== 'object' ||
+        typeof (version as { version_id?: unknown }).version_id !== 'string' ||
+        !Number.isFinite(Number((version as { percentage?: unknown }).percentage)),
+    )
+  ) {
+    return { kind: 'malformed' };
   }
-  return platformWorkerVersionHasTriggerRecord(readCloudflare, accountId, workerName, versionId);
+  const [only] = versions as Array<{ percentage: unknown; version_id: string }>;
+  return versions.length === 1 && only && Number(only.percentage) === 100
+    ? { kind: 'active', versionId: only.version_id }
+    : { kind: 'split' };
 }
 
 /**
  * Whether a version of a platform Worker has Void's record of its triggers.
- * This is the rule of the upgrade: it refuses a version without the record.
+ * This is the rule of the upgrade: it refuses a version without the record,
+ * for example a version deployed outside Void.
  */
 export async function platformWorkerVersionHasTriggerRecord(
   readCloudflare: (path: string) => Promise<unknown>,
