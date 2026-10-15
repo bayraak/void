@@ -35,6 +35,8 @@ void db generate
 
 Review and commit the SQL, then deploy again. Rollback does not reverse database migrations. See [Database](./database.md) for the local workflow.
 
+On your own Cloudflare account, deploy takes a D1 [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) bookmark before it applies pending migrations, and prints the `cf d1 time-travel restore` command that returns the database to that point. Restoring overwrites the database and every write since the bookmark. If the bookmark cannot be taken, deploy stops before it migrates.
+
 ### Environment variables
 
 Declare values in `env.ts` and set production server secrets with `void secret put`. Deploy never uploads your local `.env`. Supply public `VITE_*` values through the build environment. See [Environment Variables](./env-vars.md).

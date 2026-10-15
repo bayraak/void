@@ -3245,12 +3245,13 @@ describe('runCloudflareDeploy — resource provisioning', () => {
       'build',
       'gate',
       'migrate-gate',
+      'wrangler:d1', // migrations list (is a restore point needed?)
       'wrangler:d1', // migrations apply (after the gate)
       'wrangler:d1', // migrations list (pending verify)
       'wrangler:deploy',
     ]);
     // migrate targets the stored db name with --remote + pinned config
-    const d1Calls = wranglerArgs.filter((a) => a[0] === 'd1');
+    const d1Calls = wranglerArgs.filter((a) => a[0] === 'd1').slice(1);
     expect(d1Calls[0]).toEqual([
       'd1',
       'migrations',
@@ -4125,8 +4126,7 @@ describe('runCloudflareDeploy — D1 migrate targets the unique validated entry'
     const { deps, wranglerArgs, trace } = harness();
     await runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps);
     // Targets the validated entry's own unique database_name (resolves to DB, not OLD).
-    // `.find` returns the first d1 call — the apply (the list verify follows it).
-    expect(wranglerArgs.find((a) => a[0] === 'd1')).toEqual([
+    expect(wranglerArgs.find((a) => a[0] === 'd1' && a[2] === 'apply')).toEqual([
       'd1',
       'migrations',
       'apply',
@@ -7881,6 +7881,12 @@ describe('runCloudflareDeploy — remote migration gates', () => {
         if (args[0] === 'd1' && args[2] === 'list') {
           return { ...cleanExit, stdout: 'Migrations to be applied:\n0000_init' };
         }
+        if (args[0] === 'd1' && args[1] === 'time-travel') {
+          return {
+            ...cleanExit,
+            stdout: JSON.stringify({ bookmark: '00000085-0000024c', databaseId: REAL_D1_ID }),
+          };
+        }
         return cleanExit;
       }),
       runBuild: () => {
@@ -7892,6 +7898,7 @@ describe('runCloudflareDeploy — remote migration gates', () => {
     ).rejects.toBeInstanceOf(ExitError);
     expect(exitCalls).toEqual([1]);
     // Reached the post-apply list, then failed closed before the deploy.
+    expect(localTrace).toContain('wrangler:d1:apply');
     expect(localTrace).toContain('wrangler:d1:list');
     expect(localTrace).toContain('build');
     expect(localTrace).not.toContain('wrangler:deploy');
@@ -8646,7 +8653,7 @@ describe('runCloudflareDeploy — migration gates re-checked post-build', () => 
     await runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps);
     expect(trace).toContain('build');
     const d1Calls = wranglerArgs.filter((a) => a[0] === 'd1');
-    expect(d1Calls[0]?.slice(0, 3)).toEqual(['d1', 'migrations', 'apply']);
+    expect(d1Calls.map((a) => a.slice(0, 3))).toContainEqual(['d1', 'migrations', 'apply']);
     expect(trace).toContain('wrangler:deploy');
   });
 });

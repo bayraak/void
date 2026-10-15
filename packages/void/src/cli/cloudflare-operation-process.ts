@@ -676,6 +676,18 @@ async function resources(): Promise<Result> {
       }
       return result(0, '', called.stderr, { pending: pending.map((item) => object(item).Name) });
     }
+    case 'd1.time-travel.bookmark': {
+      const database = d1Database(operation.database);
+      const called = runCf(['d1', 'time-travel', 'get-bookmark', database.id]);
+      if (called.status !== 0) {
+        return called;
+      }
+      const bookmark = object(parsedJson(called.stdout)).bookmark;
+      if (typeof bookmark !== 'string' || bookmark === '') {
+        throw new Error('D1 Time Travel bookmark was malformed.');
+      }
+      return result(0, '', called.stderr, { bookmark, databaseId: database.id });
+    }
     case 'containers.list':
       return runCf(['containers', 'applications', 'list']);
     case 'd1.list':

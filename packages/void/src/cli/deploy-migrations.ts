@@ -614,6 +614,53 @@ export async function applyAndVerifyRemoteD1Migrations(
     if (!assertUploaderStillPinned()) {
       return false;
     }
+    // A Worker rollback does not undo a migration. Time Travel does, to a bookmark taken before
+    // the apply; it cannot be reconstructed once the migration has run.
+    const before = await Promise.resolve(
+      runWrangler(
+        { type: 'd1.migrations.list', database: d1MigrateToken, configPath },
+        { capture: true },
+      ),
+    );
+    const pendingBefore = (before.data as { pending?: unknown } | undefined)?.pending;
+    if (!isCleanCloudflareExit(before) || !Array.isArray(pendingBefore)) {
+      log.error(
+        `deploy: could not read the pending D1 migrations for "${d1MigrateToken}" before applying them ` +
+          `(\`d1 migrations list\` exit ${String(before.status)}). Refusing to migrate without knowing ` +
+          'whether a restore point is needed — rerun once wrangler can reach your account.',
+      );
+      return false;
+    }
+    if (pendingBefore.length > 0) {
+      const restorePoint = await Promise.resolve(
+        runWrangler(
+          { type: 'd1.time-travel.bookmark', database: d1MigrateToken, configPath },
+          { capture: true },
+        ),
+      );
+      const taken = restorePoint.data as { bookmark?: unknown; databaseId?: unknown } | undefined;
+      const bookmark = taken?.bookmark;
+      const databaseId = taken?.databaseId;
+      if (
+        !isCleanCloudflareExit(restorePoint) ||
+        typeof bookmark !== 'string' ||
+        typeof databaseId !== 'string'
+      ) {
+        log.error(
+          `deploy: could not take a D1 Time Travel bookmark for "${d1MigrateToken}" before applying ` +
+            `${pendingBefore.length} migration(s). A Worker rollback does not undo a migration, and this ` +
+            'bookmark is the only restore point. Refusing to migrate without one — rerun once the bookmark can be read.',
+        );
+        return false;
+      }
+      log.info(
+        `Restore point before these migrations: ${bookmark}. To undo them (destructive: it overwrites ` +
+          `the database, and every write since): npx cf d1 time-travel restore ${databaseId} --bookmark=${bookmark}`,
+      );
+      if (!assertUploaderStillPinned()) {
+        return false;
+      }
+    }
     const migrate = await Promise.resolve(
       runWrangler(
         { type: 'd1.migrations.apply', database: d1MigrateToken, configPath },
