@@ -199,9 +199,35 @@ describe('parseDbArgs', () => {
     ).toThrow('Provide either a connection string or --provider');
   });
 
+  it('parses restore to a bookmark or a timestamp', () => {
+    expect(parseDbArgs(['restore', '--bookmark=00000085-0000024c', '--yes'])).toEqual({
+      action: 'restore',
+      target: { bookmark: '00000085-0000024c' },
+      yes: true,
+    });
+    expect(parseDbArgs(['restore', '--timestamp', '2026-10-16T09:30:00+08:00'])).toEqual({
+      action: 'restore',
+      target: { timestamp: '2026-10-16T01:30:00.000Z' },
+      yes: undefined,
+    });
+  });
+
+  it.each([
+    [[], 'void db restore --bookmark <bookmark> or'],
+    [['--bookmark', 'b', '--timestamp', '2026-10-16T09:30:00Z'], 'void db restore --bookmark'],
+    [['--timestamp', 'yesterday'], '--timestamp must be an ISO 8601 time'],
+    [['--timestamp', '2026'], '--timestamp must be an ISO 8601 time'],
+    [['--timestamp', '2026-10-16T09:30:00'], 'with Z or an offset'],
+    [['--bookmark=--dry-run'], '--bookmark must be a D1 restore point'],
+    [['--bookmark', 'not-hex'], '--bookmark must be a D1 restore point'],
+    [['--remote', '--bookmark', '00000085-0000024c'], 'does not support --remote'],
+  ])('rejects restore %j', (args, message) => {
+    expect(() => parseDbArgs(['restore', ...args])).toThrow(message);
+  });
+
   it('errors on unknown subcommand', () => {
     expect(() => parseDbArgs(['unknown'])).toThrow(
-      'db: Usage: void db <push|generate|status|reset|seed|execute|migrate|studio|export|connect|set-url|rename-migrations>.',
+      'db: Usage: void db <push|generate|status|reset|seed|execute|migrate|studio|export|connect|set-url|restore|rename-migrations>.',
     );
   });
 

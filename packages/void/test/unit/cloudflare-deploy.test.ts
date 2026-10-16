@@ -3251,7 +3251,18 @@ describe('runCloudflareDeploy — resource provisioning', () => {
       'wrangler:deploy',
     ]);
     // migrate targets the stored db name with --remote + pinned config
-    const d1Calls = wranglerArgs.filter((a) => a[0] === 'd1').slice(1);
+    const d1Calls = wranglerArgs.filter((a) => a[0] === 'd1');
+    // the pre-apply list reads the pending set of the same target
+    expect(d1Calls.shift()).toEqual([
+      'd1',
+      'migrations',
+      'list',
+      'myapp-db',
+      '--remote',
+      '-c',
+      toSlash(join(root, 'wrangler.jsonc')),
+      '--env=',
+    ]);
     expect(d1Calls[0]).toEqual([
       'd1',
       'migrations',
@@ -4126,6 +4137,7 @@ describe('runCloudflareDeploy — D1 migrate targets the unique validated entry'
     const { deps, wranglerArgs, trace } = harness();
     await runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps);
     // Targets the validated entry's own unique database_name (resolves to DB, not OLD).
+    expect(wranglerArgs.filter((a) => a[0] === 'd1').every((a) => a[3] === 'myapp-db')).toBe(true);
     expect(wranglerArgs.find((a) => a[0] === 'd1' && a[2] === 'apply')).toEqual([
       'd1',
       'migrations',
@@ -7884,7 +7896,7 @@ describe('runCloudflareDeploy — remote migration gates', () => {
         if (args[0] === 'd1' && args[1] === 'time-travel') {
           return {
             ...cleanExit,
-            stdout: JSON.stringify({ bookmark: '00000085-0000024c', databaseId: REAL_D1_ID }),
+            stdout: JSON.stringify({ bookmark: '00000085-0000024c' }),
           };
         }
         return cleanExit;
@@ -7913,7 +7925,14 @@ describe('runCloudflareDeploy — remote migration gates', () => {
         if (args[0] === 'whoami') {
           return { ...cleanExit, stdout: '{"loggedIn":true,"accounts":[]}' };
         }
-        // Both `apply` and `list` exit 0 with EMPTY stdout — the failure mode when an
+        // The pre-apply list sees the pending migration, so a restore point is saved.
+        if (args[0] === 'd1' && args[2] === 'list' && !localTrace.includes('wrangler:d1:apply')) {
+          return { ...cleanExit, stdout: 'Migrations to be applied:\n0000_init' };
+        }
+        if (args[0] === 'd1' && args[1] === 'time-travel') {
+          return { ...cleanExit, stdout: JSON.stringify({ bookmark: '00000085-0000024c' }) };
+        }
+        // `apply` and the post-apply `list` exit 0 with EMPTY stdout — the failure mode when an
         // ambient WRANGLER_LOG suppressed the sentinel. Require the affirmative marker.
         return cleanExit;
       }),
@@ -7926,7 +7945,12 @@ describe('runCloudflareDeploy — remote migration gates', () => {
     ).rejects.toBeInstanceOf(ExitError);
     expect(exitCalls).toEqual([1]);
     // Never trusts an absent marker — fails closed before DEPLOY (the build already ran).
-    expect(localTrace).toContain('wrangler:d1:list');
+    expect(localTrace.filter((entry) => entry.startsWith('wrangler:d1:'))).toEqual([
+      'wrangler:d1:list',
+      'wrangler:d1:info',
+      'wrangler:d1:apply',
+      'wrangler:d1:list',
+    ]);
     expect(localTrace).toContain('build');
     expect(localTrace).not.toContain('wrangler:deploy');
   });

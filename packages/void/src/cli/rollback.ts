@@ -221,5 +221,12 @@ async function confirmUnrevertedMigrations(
       'Rolling back will NOT revert these migrations. The older code will run against the current schema.',
     ),
   );
+  if (noun === 'version') {
+    log.message(
+      dim(
+        'For D1, `void db restore --bookmark <bookmark>` undoes them with the restore point deploy printed before migrating.',
+      ),
+    );
+  }
   await confirmRollbackOrExit();
 }

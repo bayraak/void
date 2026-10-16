@@ -35,7 +35,7 @@ void db generate
 
 Review and commit the SQL, then deploy again. Rollback does not reverse database migrations. See [Database](./database.md) for the local workflow.
 
-On your own Cloudflare account, deploy takes a D1 [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) bookmark before it applies pending migrations, and prints the `cf d1 time-travel restore` command that returns the database to that point. Restoring overwrites the database and every write since the bookmark. If the bookmark cannot be taken, deploy stops before it migrates.
+On your own Cloudflare account, deploy saves a D1 [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restore point before it applies pending migrations and prints the [`void db restore`](../reference/cli/database.md#void-db-restore) command for it. If no restore point can be saved, deploy stops before it migrates. To recover from a bad migration, roll back the code with `void project rollback` if the new version is live, restore the database, then fix or remove the migration before you deploy again. Restoring discards every write made after the restore point.
 
 ### Environment variables
 
