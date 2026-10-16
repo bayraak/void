@@ -1300,14 +1300,18 @@ const HELP_TREE: HelpTree = {
         summary:
           'Restore the deployed D1 database of a direct Cloudflare deploy to an earlier point. Discards every later write.',
         usage: [
-          'void db restore --bookmark <bookmark> [--yes]',
-          'void db restore --timestamp <iso-time> [--yes]',
+          'void db restore --bookmark <bookmark> [--platform cloudflare] [--yes]',
+          'void db restore --timestamp <iso-time> [--platform cloudflare] [--yes]',
         ],
         options: [
           { command: '--bookmark <bookmark>', description: 'Restore point printed by deploy' },
           {
             command: '--timestamp <iso-time>',
             description: 'Time with Z or an offset (7 days back on Workers Free, 30 on Paid)',
+          },
+          {
+            command: '--platform cloudflare',
+            description: 'Restore after a one-off deploy with --platform cloudflare',
           },
           {
             command: '--yes',

@@ -55,6 +55,11 @@ export const dbSubcommands: Array<SubcommandDef> = [
         arg: '<iso-time>',
         description: 'Time to restore to, with Z or an offset (or use --bookmark)',
       },
+      {
+        name: '--platform',
+        arg: 'cloudflare',
+        description: 'Restore after a one-off deploy with --platform cloudflare',
+      },
       { name: '--yes', description: 'Skip the confirmation prompt' },
     ],
   },
@@ -99,6 +104,7 @@ export type DbArgs =
   | {
       action: 'restore';
       target: { bookmark: string } | { timestamp: string };
+      platform?: 'cloudflare';
       yes?: boolean;
     }
   | { action: 'rename-migrations' };
@@ -133,10 +139,41 @@ const ACTION_FLAGS: Record<DbArgs['action'], Array<string>> = {
   studio: ['remote'],
   'set-url': [],
   connect: ['provider', 'name', 'region', 'local-only'],
-  restore: ['bookmark', 'timestamp', 'yes'],
+  restore: ['bookmark', 'timestamp', 'platform', 'yes'],
   'rename-migrations': [],
   export: ['output', 'no-data', 'no-schema', 'table'],
 };
+
+/**
+ * Read a restore time as a UTC ISO string. A time without a zone would depend on where the
+ * command runs, and `new Date` rolls impossible dates over (Feb 30 becomes Mar 2), so both are
+ * rejected instead of restoring to a moment the user did not write.
+ */
+function parseRestoreTime(value: string): string | undefined {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|([+-])(\d{2}):(\d{2}))$/i.exec(
+      value,
+    );
+  const time = new Date(value);
+  if (!match || Number.isNaN(time.getTime())) {
+    return undefined;
+  }
+  const offsetMinutes = match[7]
+    ? (match[7] === '-' ? -1 : 1) * (Number(match[8]) * 60 + Number(match[9]))
+    : 0;
+  const written = new Date(time.getTime() + offsetMinutes * 60_000);
+  const fields = [
+    written.getUTCFullYear(),
+    written.getUTCMonth() + 1,
+    written.getUTCDate(),
+    written.getUTCHours(),
+    written.getUTCMinutes(),
+    written.getUTCSeconds(),
+  ];
+  return fields.every((field, index) => field === Number(match[index + 1] ?? 0))
+    ? time.toISOString()
+    : undefined;
+}
 
 function isDbAction(value: string | undefined): value is DbArgs['action'] {
   return value !== undefined && Object.hasOwn(MAX_POSITIONALS, value);
@@ -159,6 +196,7 @@ export function parseDbArgs(args: Array<string>): DbArgs {
       yes: { type: 'boolean' },
       bookmark: { type: 'string' },
       timestamp: { type: 'string' },
+      platform: { type: 'string' },
     },
     allowPositionals: true,
     strict: true,
@@ -217,6 +255,10 @@ export function parseDbArgs(args: Array<string>): DbArgs {
       };
     }
     case 'restore': {
+      if (values.platform !== undefined && values.platform !== 'cloudflare') {
+        throw new Error("db: `void db restore --platform` accepts only 'cloudflare'.");
+      }
+      const platform = values.platform;
       const bookmark = values.bookmark?.trim();
       const timestamp = values.timestamp?.trim();
       if (bookmark && !timestamp) {
@@ -225,22 +267,16 @@ export function parseDbArgs(args: Array<string>): DbArgs {
             'db: --bookmark must be a D1 restore point printed by `void deploy`, for example 00000085-0000024c-00004ef2.',
           );
         }
-        return { action, target: { bookmark }, yes: values.yes };
+        return { action, target: { bookmark }, platform, yes: values.yes };
       }
       if (timestamp && !bookmark) {
-        // Without a zone, the instant depends on where the command runs; a restore must not guess.
-        const time = new Date(timestamp);
-        if (
-          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(
-            timestamp,
-          ) ||
-          Number.isNaN(time.getTime())
-        ) {
+        const time = parseRestoreTime(timestamp);
+        if (!time) {
           throw new Error(
-            'db: --timestamp must be an ISO 8601 time with Z or an offset, for example 2026-10-16T09:30:00Z.',
+            'db: --timestamp must be a valid ISO 8601 time with Z or an offset, for example 2026-10-16T09:30:00Z.',
           );
         }
-        return { action, target: { timestamp: time.toISOString() }, yes: values.yes };
+        return { action, target: { timestamp: time }, platform, yes: values.yes };
       }
       throw new Error(
         'db: Usage: void db restore --bookmark <bookmark> or void db restore --timestamp <iso-time>.',

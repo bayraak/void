@@ -213,11 +213,30 @@ describe('parseDbArgs', () => {
   });
 
   it.each([
+    ['2024-02-29T23:59:59Z', '2024-02-29T23:59:59.000Z'],
+    ['2026-10-16T09:30:00-05:30', '2026-10-16T15:00:00.000Z'],
+    ['2026-01-01T00:30:00+01:00', '2025-12-31T23:30:00.000Z'],
+  ])('reads the restore time %s as %s', (input, utc) => {
+    expect(parseDbArgs(['restore', '--timestamp', input])).toMatchObject({
+      target: { timestamp: utc },
+    });
+  });
+
+  it('parses an explicit Cloudflare restore after a one-off deploy', () => {
+    expect(
+      parseDbArgs(['restore', '--platform', 'cloudflare', '--bookmark', '00000085-0000024c']),
+    ).toMatchObject({ platform: 'cloudflare', target: { bookmark: '00000085-0000024c' } });
+  });
+
+  it.each([
     [[], 'void db restore --bookmark <bookmark> or'],
     [['--bookmark', 'b', '--timestamp', '2026-10-16T09:30:00Z'], 'void db restore --bookmark'],
-    [['--timestamp', 'yesterday'], '--timestamp must be an ISO 8601 time'],
-    [['--timestamp', '2026'], '--timestamp must be an ISO 8601 time'],
+    [['--timestamp', 'yesterday'], '--timestamp must be a valid ISO 8601 time'],
+    [['--timestamp', '2026'], '--timestamp must be a valid ISO 8601 time'],
     [['--timestamp', '2026-10-16T09:30:00'], 'with Z or an offset'],
+    [['--timestamp', '2026-02-30T09:30:00Z'], 'must be a valid ISO 8601 time'],
+    [['--timestamp', '2026-10-16T24:00:00Z'], 'must be a valid ISO 8601 time'],
+    [['--platform', 'void', '--bookmark', '00000085-0000024c'], "accepts only 'cloudflare'"],
     [['--bookmark=--dry-run'], '--bookmark must be a D1 restore point'],
     [['--bookmark', 'not-hex'], '--bookmark must be a D1 restore point'],
     [['--remote', '--bookmark', '00000085-0000024c'], 'does not support --remote'],

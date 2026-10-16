@@ -614,6 +614,8 @@ export async function applyAndVerifyRemoteD1Migrations(
   configPath: string,
   runWrangler: DeployWranglerRun,
   assertUploaderStillPinned: () => boolean,
+  /** Set after a one-off `--platform cloudflare` deploy, which does not change the saved platform. */
+  restorePlatformFlag = false,
 ): Promise<boolean> {
   // Runs only after every local gate passes, so a failed gate never changes remote D1.
   if (d1MigrateToken) {
@@ -662,7 +664,7 @@ export async function applyAndVerifyRemoteD1Migrations(
       }
       restoreHint =
         '\nTo undo these migrations, restore this point (discards every later write):\n' +
-        `  void db restore --bookmark=${bookmark}`;
+        `  void db restore${restorePlatformFlag ? ' --platform cloudflare' : ''} --bookmark=${bookmark}`;
       log.info(
         `Saved a D1 restore point before applying ${formatCount(pendingBefore.length, 'migration')}.${restoreHint}`,
       );

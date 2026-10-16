@@ -13,6 +13,7 @@ import { CloudflareAuthSecretError } from './deploy-resources.ts';
 import { type CloudflareDeployDeps } from './deploy-types.ts';
 import { type CliLogger } from './log-file.ts';
 import { getErrorMessage } from './output.ts';
+import { readDeploymentPlatform } from './project.ts';
 
 export type CloudflareMigration = Awaited<ReturnType<typeof migrateCloudflareWorker>>;
 
@@ -154,6 +155,7 @@ export async function migrateCloudflareWorker(input: {
       configPath,
       runWrangler,
       assertUploaderStillPinned,
+      readDeploymentPlatform(root) !== 'cloudflare',
     ))
   ) {
     return exit(1);

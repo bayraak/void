@@ -92,11 +92,13 @@ By default, targets the local database. Pass `--remote` to open Studio against t
 ## `void db restore` {#void-db-restore}
 
 ```
-void db restore --bookmark <bookmark> [--yes]
-void db restore --timestamp <iso-time> [--yes]
+void db restore --bookmark <bookmark> [--platform cloudflare] [--yes]
+void db restore --timestamp <iso-time> [--platform cloudflare] [--yes]
 ```
 
 Restore the deployed D1 database of a direct Cloudflare deploy with D1 [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/). Before `void deploy --platform cloudflare` applies migrations, it prints the `--bookmark` that undoes them. `--timestamp` restores the state at an ISO 8601 time with `Z` or an offset instead, such as `2026-10-16T09:30:00Z`. Time Travel keeps 7 days of history on Workers Free and 30 days on Workers Paid. An older bookmark or time can no longer be restored: Cloudflare rejects it and the database stays unchanged. To undo an older migration, write a new migration that reverses it.
+
+If the project's saved destination is not Cloudflare and you deployed once with `void deploy --platform cloudflare`, pass `--platform cloudflare`; deploy prints the command with it.
 
 Restoring replaces the whole database and discards every write made after that point. Void names the database and asks before it restores. Pass `--yes` to skip the prompt in scripts and CI; without a terminal, the command stops unless `--yes` is set. Afterwards Void prints the `void db restore` command that undoes the restore.
 

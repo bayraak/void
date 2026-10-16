@@ -154,6 +154,19 @@ describe('the D1 restore point a deploy takes before migrating', () => {
     expect(errorText()).toContain(`void db restore --bookmark=${bookmark}`);
   });
 
+  it('names the platform in the restore command after a one-off Cloudflare deploy', async () => {
+    const runner = recordingRunner({
+      'd1.migrations.list': [pending(['0001_add_column.sql']), pending([])],
+      'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
+    });
+
+    await applyAndVerifyRemoteD1Migrations('app-db', 'wrangler.json', runner.run, () => true, true);
+
+    expect(vi.mocked(log.info)).toHaveBeenCalledWith(
+      expect.stringContaining(`void db restore --platform cloudflare --bookmark=${bookmark}`),
+    );
+  });
+
   it('saves no restore point when no migration is pending', async () => {
     const runner = recordingRunner({ 'd1.migrations.list': [pending([]), pending([])] });
 

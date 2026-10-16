@@ -212,7 +212,7 @@ export async function runDbCommand(root: string, args: DbArgs): Promise<void> {
   } else if (args.action === 'connect') {
     await runConnect(root, dialect, args);
   } else if (args.action === 'restore') {
-    await runRestore(root, dialect, args.target, args.yes);
+    await runRestore(root, dialect, args);
   } else if (args.action === 'rename-migrations') {
     await runRenameMigrations(root, dialect);
   } else {
@@ -1424,18 +1424,24 @@ async function runMigrate(root: string, dialect: DatabaseDialect, remote?: boole
 async function runRestore(
   root: string,
   dialect: DatabaseDialect,
-  target: { bookmark: string } | { timestamp: string },
-  yes: boolean | undefined,
+  { target, platform: explicitPlatform, yes }: Extract<DbArgs, { action: 'restore' }>,
 ): Promise<void> {
   // `.void` is not checked in, so a fresh checkout or CI shows a direct deploy only through its
-  // Cloudflare config.
+  // Cloudflare config. A one-off `deploy --platform cloudflare` keeps the saved platform, so its
+  // restore command passes the platform explicitly.
   const platform = readDeploymentPlatform(root);
   const directCloudflare =
+    explicitPlatform === 'cloudflare' ||
     platform === 'cloudflare' ||
     (platform === null && !readProjectConfig(root) && (await hasDeployedCloudflareDatabase(root)));
-  if (dialect !== 'sqlite' || !directCloudflare) {
+  if (dialect !== 'sqlite') {
+    log.error('db: `void db restore` restores D1 databases only.');
+    process.exit(1);
+  }
+  if (!directCloudflare) {
     log.error(
-      'db: `void db restore` restores the D1 database of a direct Cloudflare deploy (`void deploy --platform cloudflare`).',
+      'db: `void db restore` restores the D1 database of a direct Cloudflare deploy. ' +
+        'After a one-off `void deploy --platform cloudflare`, run it with `--platform cloudflare`.',
     );
     process.exit(1);
   }

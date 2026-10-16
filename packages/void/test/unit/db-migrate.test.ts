@@ -549,17 +549,38 @@ describe('void db restore', () => {
     expect(output.printSuccess).toHaveBeenCalled();
   });
 
+  function savedOnVoid(): string {
+    const root = d1Project(false);
+    mkdirSync(join(root, '.void'), { recursive: true });
+    writeFileSync(join(root, '.void', 'project.json'), JSON.stringify({ platform: 'void' }));
+    return root;
+  }
+
+  it('restores after a one-off Cloudflare deploy when --platform cloudflare is passed', async () => {
+    const root = savedOnVoid();
+    mockRestoreCloudflareD1Database.mockResolvedValue(undefined);
+    mockReadCloudflareD1Migrations.mockResolvedValue(['001_create_users.sql', '002_add_email.sql']);
+
+    await runDbCommand(root, {
+      action: 'restore',
+      target: { bookmark },
+      platform: 'cloudflare',
+      yes: true,
+    });
+
+    expect(mockRestoreCloudflareD1Database).toHaveBeenCalledWith(
+      expect.objectContaining({ migrateToken: 'app-db' }),
+      { bookmark },
+    );
+  });
+
   it.each([
-    ['has no Cloudflare deploy', () => createProjectRoot({})],
     [
-      'deploys to a Void platform',
-      () => {
-        const root = d1Project(false);
-        mkdirSync(join(root, '.void'), { recursive: true });
-        writeFileSync(join(root, '.void', 'project.json'), JSON.stringify({ platform: 'void' }));
-        return root;
-      },
+      'has no Cloudflare deploy',
+      () => createProjectRoot({}),
+      'run it with `--platform cloudflare`',
     ],
+    ['is saved on a Void platform', savedOnVoid, 'run it with `--platform cloudflare`'],
     [
       'uses PostgreSQL',
       () => {
@@ -567,15 +588,16 @@ describe('void db restore', () => {
         selectCloudflare(root);
         return root;
       },
+      'restores D1 databases only',
     ],
-  ])('refuses a project that %s', async (_name, makeRoot) => {
+  ])('refuses a project that %s', async (_name, makeRoot, message) => {
     const root = makeRoot();
 
     await expect(
       runDbCommand(root, { action: 'restore', target: { bookmark }, yes: true }),
     ).rejects.toThrow('process.exit:1');
 
-    expect(mockLog.error).toHaveBeenCalledWith(expect.stringContaining('direct Cloudflare deploy'));
+    expect(mockLog.error).toHaveBeenCalledWith(expect.stringContaining(message));
     expect(mockRestoreCloudflareD1Database).not.toHaveBeenCalled();
   });
 });
