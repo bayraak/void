@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { parseProjectArgs } from '../../src/cli/project-args.ts';
+import { parseProjectArgs, projectSubcommands } from '../../src/cli/project-args.ts';
 
 describe('parseProjectArgs', () => {
   describe('token', () => {
@@ -329,6 +329,20 @@ describe('parseProjectArgs', () => {
       expect(parseProjectArgs(['rollback', 'abc123'])).toEqual({
         subcommand: 'rollback',
         deployId: 'abc123',
+      });
+    });
+
+    it('offers --platform as a rollback flag in the interactive list', () => {
+      const rollback = projectSubcommands.find((entry) => entry.name === 'rollback');
+      expect(rollback?.arg).toBe('[deployId]');
+      expect(rollback?.flags).toEqual([
+        expect.objectContaining({ name: '--platform', arg: 'cloudflare' }),
+      ]);
+      // The prompt passes the id and each flag value as separate argv items.
+      expect(parseProjectArgs(['rollback', 'abc123', '--platform', 'cloudflare'])).toEqual({
+        subcommand: 'rollback',
+        deployId: 'abc123',
+        platform: 'cloudflare',
       });
     });
 

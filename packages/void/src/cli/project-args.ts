@@ -32,8 +32,15 @@ export const projectSubcommands: Array<SubcommandDef> = [
   { name: 'requests', description: 'Show request-level traffic (status, method, timing)' },
   {
     name: 'rollback',
-    arg: '[deployId] [--platform cloudflare]',
+    arg: '[deployId]',
     description: 'Roll back to a previous deployment',
+    flags: [
+      {
+        name: '--platform',
+        arg: 'cloudflare',
+        description: 'Roll back after a one-off deploy with --platform cloudflare',
+      },
+    ],
   },
   { name: 'cancel', arg: '[deployId]', description: 'Cancel an active deployment' },
   {

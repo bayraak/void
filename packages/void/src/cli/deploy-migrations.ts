@@ -626,22 +626,29 @@ export async function applyAndVerifyRemoteD1Migrations(
     }
     // A Worker rollback does not undo a migration. Time Travel does, and a bookmark taken right
     // before the apply restores exactly the state the migrations started from.
-    const before = await Promise.resolve(
-      runWrangler(
-        { type: 'd1.migrations.list', database: d1MigrateToken, configPath },
-        { capture: true },
-      ),
-    );
-    const pendingBefore = (before.data as { pending?: unknown } | undefined)?.pending;
-    if (!isCleanCloudflareExit(before) || !Array.isArray(pendingBefore)) {
+    const readPending = async (): Promise<Array<unknown> | undefined> => {
+      const listed = await Promise.resolve(
+        runWrangler(
+          { type: 'd1.migrations.list', database: d1MigrateToken, configPath },
+          { capture: true },
+        ),
+      );
+      const pending = (listed.data as { pending?: unknown } | undefined)?.pending;
+      if (isCleanCloudflareExit(listed) && Array.isArray(pending)) {
+        return pending;
+      }
       log.error(
         `deploy: could not read the pending D1 migrations for "${d1MigrateToken}" before applying them ` +
-          (isCleanCloudflareExit(before)
+          (isCleanCloudflareExit(listed)
             ? '(Cloudflare returned no pending migration list). '
-            : `(exit ${String(before.status)}). `) +
+            : `(exit ${String(listed.status)}). `) +
           'Refusing to migrate without knowing whether a restore point is needed. Rerun once Cloudflare can be reached.' +
-          cloudflareReason(before),
+          cloudflareReason(listed),
       );
+      return undefined;
+    };
+    const pendingBefore = await readPending();
+    if (!pendingBefore) {
       return false;
     }
     let restoreHint = '';
@@ -662,12 +669,20 @@ export async function applyAndVerifyRemoteD1Migrations(
         );
         return false;
       }
-      restoreHint =
-        '\nTo undo these migrations, restore this point (discards every later write):\n' +
-        `  void db restore${restorePlatformFlag ? ' --platform cloudflare' : ''} --bookmark=${bookmark}`;
-      log.info(
-        `Saved a D1 restore point before applying ${formatCount(pendingBefore.length, 'migration')}.${restoreHint}`,
-      );
+      // An overlapping deploy may have applied some of them before the bookmark. Whatever is still
+      // pending now is applied after it, so the bookmark undoes exactly those.
+      const pendingAfterBookmark = await readPending();
+      if (!pendingAfterBookmark) {
+        return false;
+      }
+      if (pendingAfterBookmark.length > 0) {
+        restoreHint =
+          '\nTo undo these migrations, restore this point (discards every later write):\n' +
+          `  void db restore${restorePlatformFlag ? ' --platform cloudflare' : ''} --bookmark=${bookmark}`;
+        log.info(
+          `Saved a D1 restore point before applying ${formatCount(pendingAfterBookmark.length, 'migration')}.${restoreHint}`,
+        );
+      }
       if (!assertUploaderStillPinned()) {
         return false;
       }

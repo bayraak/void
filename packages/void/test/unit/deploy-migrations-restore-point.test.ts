@@ -38,7 +38,11 @@ beforeEach(() => {
 describe('the D1 restore point a deploy takes before migrating', () => {
   it('saves a restore point before applying pending migrations, and names how to restore it', async () => {
     const runner = recordingRunner({
-      'd1.migrations.list': [pending(['0001_add_column.sql']), pending([])],
+      'd1.migrations.list': [
+        pending(['0001_add_column.sql']),
+        pending(['0001_add_column.sql']),
+        pending([]),
+      ],
       'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
     });
 
@@ -53,6 +57,7 @@ describe('the D1 restore point a deploy takes before migrating', () => {
     expect(runner.calls).toEqual([
       'd1.migrations.list',
       'd1.time-travel.bookmark',
+      'd1.migrations.list',
       'd1.migrations.apply',
       'd1.migrations.list',
     ]);
@@ -113,7 +118,7 @@ describe('the D1 restore point a deploy takes before migrating', () => {
 
   it('checks the uploader again after the restore point, before applying', async () => {
     const runner = recordingRunner({
-      'd1.migrations.list': [pending(['0001_add_column.sql'])],
+      'd1.migrations.list': [pending(['0001_add_column.sql']), pending(['0001_add_column.sql'])],
       'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
     });
     const stillPinned = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
@@ -126,7 +131,11 @@ describe('the D1 restore point a deploy takes before migrating', () => {
     );
 
     expect(applied).toBe(false);
-    expect(runner.calls).toEqual(['d1.migrations.list', 'd1.time-travel.bookmark']);
+    expect(runner.calls).toEqual([
+      'd1.migrations.list',
+      'd1.time-travel.bookmark',
+      'd1.migrations.list',
+    ]);
   });
 
   it.each([
@@ -137,7 +146,11 @@ describe('the D1 restore point a deploy takes before migrating', () => {
     { name: 'the uploader changed after the apply', pinnedChecks: 2 },
   ])('repeats the restore command when $name', async ({ apply, verify, pinnedChecks }) => {
     const runner = recordingRunner({
-      'd1.migrations.list': [pending(['0001_add_column.sql']), verify ?? pending([])],
+      'd1.migrations.list': [
+        pending(['0001_add_column.sql']),
+        pending(['0001_add_column.sql']),
+        verify ?? pending([]),
+      ],
       'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
       'd1.migrations.apply': [apply ?? clean],
     });
@@ -156,7 +169,11 @@ describe('the D1 restore point a deploy takes before migrating', () => {
 
   it('names the platform in the restore command after a one-off Cloudflare deploy', async () => {
     const runner = recordingRunner({
-      'd1.migrations.list': [pending(['0001_add_column.sql']), pending([])],
+      'd1.migrations.list': [
+        pending(['0001_add_column.sql']),
+        pending(['0001_add_column.sql']),
+        pending([]),
+      ],
       'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
     });
 
@@ -165,6 +182,65 @@ describe('the D1 restore point a deploy takes before migrating', () => {
     expect(vi.mocked(log.info)).toHaveBeenCalledWith(
       expect.stringContaining(`void db restore --platform cloudflare --bookmark=${bookmark}`),
     );
+  });
+
+  it('names only the migrations still pending after the restore point', async () => {
+    // An overlapping deploy applied 0001 between the first read and the bookmark.
+    const runner = recordingRunner({
+      'd1.migrations.list': [
+        pending(['0001_add_column.sql', '0002_add_index.sql']),
+        pending(['0002_add_index.sql']),
+        pending([]),
+      ],
+      'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
+    });
+
+    await applyAndVerifyRemoteD1Migrations('app-db', 'wrangler.json', runner.run, () => true);
+
+    expect(vi.mocked(log.info)).toHaveBeenCalledWith(
+      expect.stringContaining('Saved a D1 restore point before applying 1 migration.'),
+    );
+  });
+
+  it('offers no restore point when an overlapping deploy applied every pending migration', async () => {
+    const runner = recordingRunner({
+      'd1.migrations.list': [pending(['0001_add_column.sql']), pending([]), pending([])],
+      'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
+      'd1.migrations.apply': [{ status: 1, stdout: '', stderr: '' }],
+    });
+
+    const applied = await applyAndVerifyRemoteD1Migrations(
+      'app-db',
+      'wrangler.json',
+      runner.run,
+      () => true,
+    );
+
+    // The bookmark is later than those migrations, so restoring it would not undo them.
+    expect(applied).toBe(false);
+    expect(vi.mocked(log.info)).not.toHaveBeenCalled();
+    expect(errorText()).not.toContain('void db restore');
+  });
+
+  it('refuses to migrate when the pending list cannot be read after the restore point', async () => {
+    const runner = recordingRunner({
+      'd1.migrations.list': [
+        pending(['0001_add_column.sql']),
+        { status: 1, stdout: '', stderr: 'Authentication error' },
+      ],
+      'd1.time-travel.bookmark': [{ ...clean, data: { bookmark } }],
+    });
+
+    const applied = await applyAndVerifyRemoteD1Migrations(
+      'app-db',
+      'wrangler.json',
+      runner.run,
+      () => true,
+    );
+
+    expect(applied).toBe(false);
+    expect(runner.calls).not.toContain('d1.migrations.apply');
+    expect(errorText()).toContain('Cloudflare: Authentication error');
   });
 
   it('saves no restore point when no migration is pending', async () => {

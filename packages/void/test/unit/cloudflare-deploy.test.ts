@@ -7948,6 +7948,7 @@ describe('runCloudflareDeploy — remote migration gates', () => {
     expect(localTrace.filter((entry) => entry.startsWith('wrangler:d1:'))).toEqual([
       'wrangler:d1:list',
       'wrangler:d1:info',
+      'wrangler:d1:list',
       'wrangler:d1:apply',
       'wrangler:d1:list',
     ]);
