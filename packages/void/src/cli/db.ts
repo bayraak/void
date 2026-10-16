@@ -1477,8 +1477,13 @@ async function runRestore(
     );
     process.exit(1);
   }
+  // `--platform cloudflare` always reaches this database; the bare commands follow the saved
+  // platform.
+  const platformFlag = platform === 'cloudflare' ? '' : ' --platform cloudflare';
   if (previousBookmark) {
-    log.info(`To undo this restore, run \`void db restore --bookmark=${previousBookmark}\`.`);
+    log.info(
+      `To undo this restore, run \`void db restore${platformFlag} --bookmark=${previousBookmark}\`.`,
+    );
   }
   // A restore also rewinds the migration table, so the next deploy applies those files again.
   const paths = readProjectPaths(root);
@@ -1490,12 +1495,15 @@ async function runRestore(
     if (unapplied.length > 0) {
       log.warn(
         `The remote database does not have these migrations applied: ${unapplied.map((migration) => migration.name).join(', ')}. ` +
-          'The next `void deploy` applies them. Fix or remove a migration that caused the problem before you deploy.',
+          `The next \`void deploy${platformFlag}\` applies them. Fix or remove a migration that caused the problem before you deploy.`,
       );
     }
   } catch (error) {
     log.warn(
-      `Could not read the applied migrations after the restore: ${getErrorMessage(error)}. Run \`void db status\` to check them.`,
+      `Could not read the applied migrations after the restore: ${getErrorMessage(error)}. ` +
+        (platformFlag
+          ? `The next \`void deploy${platformFlag}\` applies any migration the restore rewound.`
+          : 'Run `void db status` to check them.'),
     );
   }
   printSuccess(`Restored ${database} to ${point}.`);

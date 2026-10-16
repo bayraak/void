@@ -773,10 +773,16 @@ const HELP_TREE: HelpTree = {
           },
         ],
       },
-      rollback: basicSubcommand(
-        'Roll back to a previous deployment.',
-        'void project rollback [deployId]',
-      ),
+      rollback: {
+        summary: 'Roll back to a previous deployment.',
+        usage: ['void project rollback [deployId] [--platform cloudflare]'],
+        options: [
+          {
+            command: '--platform cloudflare',
+            description: 'Roll back the Cloudflare Worker after a one-off Cloudflare deploy',
+          },
+        ],
+      },
       cancel: basicSubcommand('Cancel an active deployment.', 'void project cancel [deployId]'),
       delete: {
         summary: 'Delete a project and all its resources.',

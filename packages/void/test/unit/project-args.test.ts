@@ -315,6 +315,41 @@ describe('parseProjectArgs', () => {
       );
     });
 
+    it('accepts --platform cloudflare for rollback in either position', () => {
+      expect(parseProjectArgs(['rollback', '--platform', 'cloudflare'])).toEqual({
+        subcommand: 'rollback',
+        deployId: '',
+        platform: 'cloudflare',
+      });
+      expect(parseProjectArgs(['rollback', 'abc123', '--platform=cloudflare'])).toEqual({
+        subcommand: 'rollback',
+        deployId: 'abc123',
+        platform: 'cloudflare',
+      });
+      expect(parseProjectArgs(['rollback', 'abc123'])).toEqual({
+        subcommand: 'rollback',
+        deployId: 'abc123',
+      });
+    });
+
+    it.each([['void'], ['']])('rejects rollback --platform %o', (value) => {
+      expect(() => parseProjectArgs(['rollback', `--platform=${value}`])).toThrow(
+        "accepts only 'cloudflare'",
+      );
+    });
+
+    it('rejects rollback --platform without a value', () => {
+      expect(() => parseProjectArgs(['rollback', '--platform'])).toThrow(
+        "accepts only 'cloudflare'",
+      );
+    });
+
+    it('rejects --platform for cancel', () => {
+      expect(() => parseProjectArgs(['cancel', '--platform', 'cloudflare'])).toThrow(
+        "project: Unknown flag '--platform'.",
+      );
+    });
+
     it('rejects an unknown flag for cancel', () => {
       expect(() => parseProjectArgs(['cancel', '--foo'])).toThrow("project: Unknown flag '--foo'.");
     });

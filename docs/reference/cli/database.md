@@ -102,7 +102,7 @@ If the project's saved destination is not Cloudflare and you deployed once with 
 
 Restoring replaces the whole database and discards every write made after that point. Void names the database and asks before it restores. Pass `--yes` to skip the prompt in scripts and CI; without a terminal, the command stops unless `--yes` is set. Afterwards Void prints the `void db restore` command that undoes the restore.
 
-A restore also rewinds the record of applied migrations. Void lists the migration files the database no longer has applied; the next deploy applies them, so fix or remove the one that caused the problem first. Restoring does not change the deployed code: use `void project rollback` if the live version needs the newer schema.
+A restore also rewinds the record of applied migrations. Void lists the migration files the database no longer has applied; the next deploy applies them, so fix or remove the one that caused the problem first. Restoring does not change the deployed code: use [`void project rollback`](./project.md#void-project-rollback-deployid) if the live version needs the newer schema. After a one-off Cloudflare deploy, pass `--platform cloudflare` to `void project rollback` and `void deploy` as well.
 
 ## `void db rename-migrations` {#void-db-rename-migrations}
 

@@ -457,7 +457,8 @@ describe('void db restore', () => {
     );
     expect(mockLog.warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        'The remote database does not have these migrations applied: 002_add_email.sql.',
+        'The remote database does not have these migrations applied: 002_add_email.sql. ' +
+          'The next `void deploy` applies them.',
       ),
     );
     expect(output.printSuccess).toHaveBeenCalledWith(
@@ -477,6 +478,7 @@ describe('void db restore', () => {
     });
 
     expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining('network down'));
+    expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining('Run `void db status`'));
     expect(mockLog.info).not.toHaveBeenCalledWith(expect.stringContaining('To undo'));
     expect(output.printSuccess).toHaveBeenCalledWith(
       'Restored D1 database app-db (DB) to 2026-10-16T09:30:00Z.',
@@ -558,8 +560,8 @@ describe('void db restore', () => {
 
   it('restores after a one-off Cloudflare deploy when --platform cloudflare is passed', async () => {
     const root = savedOnVoid();
-    mockRestoreCloudflareD1Database.mockResolvedValue(undefined);
-    mockReadCloudflareD1Migrations.mockResolvedValue(['001_create_users.sql', '002_add_email.sql']);
+    mockRestoreCloudflareD1Database.mockResolvedValue(previous);
+    mockReadCloudflareD1Migrations.mockResolvedValue(['001_create_users.sql']);
 
     await runDbCommand(root, {
       action: 'restore',
@@ -572,6 +574,31 @@ describe('void db restore', () => {
       expect.objectContaining({ migrateToken: 'app-db' }),
       { bookmark },
     );
+    // The saved platform is Void, so the bare follow-up commands would not reach Cloudflare.
+    expect(mockLog.info).toHaveBeenCalledWith(
+      `To undo this restore, run \`void db restore --platform cloudflare --bookmark=${previous}\`.`,
+    );
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining('The next `void deploy --platform cloudflare` applies them.'),
+    );
+  });
+
+  it('names the platform when the migrations cannot be read after a one-off restore', async () => {
+    const root = savedOnVoid();
+    mockRestoreCloudflareD1Database.mockResolvedValue(undefined);
+    mockReadCloudflareD1Migrations.mockRejectedValue(new Error('network down'));
+
+    await runDbCommand(root, {
+      action: 'restore',
+      target: { bookmark },
+      platform: 'cloudflare',
+      yes: true,
+    });
+
+    const warning = String(mockLog.warn.mock.calls[0]?.[0]);
+    expect(warning).toContain('network down');
+    expect(warning).toContain('`void deploy --platform cloudflare`');
+    expect(warning).not.toContain('void db status');
   });
 
   it.each([
