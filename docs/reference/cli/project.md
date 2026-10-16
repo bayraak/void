@@ -179,7 +179,7 @@ Roll back to a previous deployment or Worker Version.
 
 On a Void platform, you can select a retained deployment. On Cloudflare, use a complete Worker Version ID or an unambiguous prefix. Void activates that version at 100%. When both versions have complete trigger snapshots, it also restores the selected version's schedules, queues, workflows, routes, and custom domains. Otherwise, rollback keeps the current triggers and restores the code, including versions originally deployed outside Void.
 
-Rollback doesn't reverse database migrations. If older code may run against a newer schema, or migration metadata is missing, Void explains the risk and asks for confirmation. On Cloudflare, undo D1 migrations with [`void db restore`](./database.md#void-db-restore) and the restore point that deploy printed before it applied them.
+Rollback doesn't reverse database migrations. If older code may run against a newer schema, or migration metadata is missing, Void explains the risk and asks for confirmation. On Cloudflare, undo D1 migrations with [`void db restore`](./database.md#void-db-restore) and the restore point that deploy printed before it applied them, within 7 days on Workers Free or 30 days on Workers Paid.
 
 ## `void project cancel [deployId]` {#void-project-cancel-deployid}
 

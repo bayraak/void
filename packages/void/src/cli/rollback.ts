@@ -224,7 +224,8 @@ async function confirmUnrevertedMigrations(
   if (noun === 'version') {
     log.message(
       dim(
-        'For D1, `void db restore --bookmark <bookmark>` undoes them with the restore point deploy printed before migrating.',
+        'For D1, `void db restore --bookmark <bookmark>` undoes them with the restore point deploy printed before migrating. ' +
+          'Restore points expire after 7 days on Workers Free and 30 days on Paid; undo older migrations with a new migration.',
       ),
     );
   }

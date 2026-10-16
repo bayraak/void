@@ -499,6 +499,23 @@ describe('void db restore', () => {
     expect(mockRestoreCloudflareD1Database).not.toHaveBeenCalled();
   });
 
+  it('explains that restore points expire when Cloudflare rejects the restore', async () => {
+    const root = d1Project();
+    mockRestoreCloudflareD1Database.mockRejectedValue(
+      new Error('Cloudflare command failed (d1.time-travel.restore, exit 1): bookmark expired'),
+    );
+
+    await expect(
+      runDbCommand(root, { action: 'restore', target: { bookmark }, yes: true }),
+    ).rejects.toThrow('process.exit:1');
+
+    const message = String(mockLog.error.mock.calls[0]?.[0]);
+    expect(message).toContain('bookmark expired');
+    expect(message).toContain('Restore points expire after 7 days on Workers Free');
+    expect(mockReadCloudflareD1Migrations).not.toHaveBeenCalled();
+    expect(output.printSuccess).not.toHaveBeenCalled();
+  });
+
   it('asks before restoring in a terminal, and changes nothing when declined', async () => {
     const root = d1Project();
     mockConfirm.mockResolvedValue(false);

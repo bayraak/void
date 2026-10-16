@@ -1460,7 +1460,17 @@ async function runRestore(
     }
   }
 
-  const previousBookmark = await restoreCloudflareD1Database(context, target);
+  let previousBookmark: string | undefined;
+  try {
+    previousBookmark = await restoreCloudflareD1Database(context, target);
+  } catch (error) {
+    log.error(
+      `db: Could not restore ${database} to ${point}: ${getErrorMessage(error)}\n` +
+        'Restore points expire after 7 days on Workers Free and 30 days on Workers Paid. ' +
+        'To undo an older migration, write a new migration that reverses it.',
+    );
+    process.exit(1);
+  }
   if (previousBookmark) {
     log.info(`To undo this restore, run \`void db restore --bookmark=${previousBookmark}\`.`);
   }
