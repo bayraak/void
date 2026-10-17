@@ -146,12 +146,12 @@ const ACTION_FLAGS: Record<DbArgs['action'], Array<string>> = {
 
 /**
  * Read a restore time as a UTC ISO string. A time without a zone would depend on where the
- * command runs, and `new Date` rolls impossible dates over (Feb 30 becomes Mar 2), so both are
- * rejected instead of restoring to a moment the user did not write.
+ * command runs, `new Date` rolls impossible dates over (Feb 30 becomes Mar 2), and it keeps only
+ * milliseconds, so all three are rejected instead of restoring to a moment the user did not write.
  */
 function parseRestoreTime(value: string): string | undefined {
   const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|([+-])(\d{2}):(\d{2}))$/i.exec(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|([+-])(\d{2}):(\d{2}))$/i.exec(
       value,
     );
   const time = new Date(value);
@@ -273,7 +273,7 @@ export function parseDbArgs(args: Array<string>): DbArgs {
         const time = parseRestoreTime(timestamp);
         if (!time) {
           throw new Error(
-            'db: --timestamp must be a valid ISO 8601 time with Z or an offset, for example 2026-10-16T09:30:00Z.',
+            'db: --timestamp must be a valid ISO 8601 time with Z or an offset and at most millisecond precision, for example 2026-10-16T09:30:00Z.',
           );
         }
         return { action, target: { timestamp: time }, platform, yes: values.yes };
