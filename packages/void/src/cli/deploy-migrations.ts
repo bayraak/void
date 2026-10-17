@@ -608,7 +608,19 @@ function cloudflareReason(result: DeployWranglerRunResult): string {
   return detail ? `\nCloudflare: ${sanitizeTerminalLogText(detail)}` : '';
 }
 
-/** Apply remote D1 changes and prove no migrations remain pending. */
+/** Name the restore point when deploy stops after it applied D1 migrations. */
+export function logD1RestoreAfterDeployFailure(restoreCommand: string): void {
+  log.error(
+    'deploy: D1 migrations were applied before the deploy stopped. Fix the error and deploy again.\n' +
+      'If the live version cannot run against the new schema, restore the point saved before them ' +
+      `(discards every later write):\n  ${restoreCommand}`,
+  );
+}
+
+/**
+ * Apply remote D1 changes and prove no migrations remain pending. Returns the command that
+ * restores the point saved before them, if this deploy applied any.
+ */
 export async function applyAndVerifyRemoteD1Migrations(
   d1MigrateToken: string | undefined,
   configPath: string,
@@ -616,7 +628,8 @@ export async function applyAndVerifyRemoteD1Migrations(
   assertUploaderStillPinned: () => boolean,
   /** Set after a one-off `--platform cloudflare` deploy, which does not change the saved platform. */
   restorePlatformFlag = false,
-): Promise<boolean> {
+): Promise<false | { restoreCommand: string | undefined }> {
+  let restoreCommand: string | undefined;
   // Runs only after every local gate passes, so a failed gate never changes remote D1.
   if (d1MigrateToken) {
     log.step('Applying D1 migrations...');
@@ -676,9 +689,10 @@ export async function applyAndVerifyRemoteD1Migrations(
         return false;
       }
       if (pendingAfterBookmark.length > 0) {
+        restoreCommand = `void db restore${restorePlatformFlag ? ' --platform cloudflare' : ''} --bookmark=${bookmark}`;
         restoreHint =
           '\nTo undo these migrations, restore this point (discards every later write):\n' +
-          `  void db restore${restorePlatformFlag ? ' --platform cloudflare' : ''} --bookmark=${bookmark}`;
+          `  ${restoreCommand}`;
         log.info(
           `Saved a D1 restore point before applying ${formatCount(pendingAfterBookmark.length, 'migration')}.${restoreHint}`,
         );
@@ -705,8 +719,8 @@ export async function applyAndVerifyRemoteD1Migrations(
 
     // A clean exit does not prove the schema is current, so read the pending set.
     if (!assertUploaderStillPinned()) {
-      if (restoreHint) {
-        log.error(`deploy: D1 migrations were applied before the deploy stopped.${restoreHint}`);
+      if (restoreCommand) {
+        logD1RestoreAfterDeployFailure(restoreCommand);
       }
       return false;
     }
@@ -750,5 +764,5 @@ export async function applyAndVerifyRemoteD1Migrations(
     }
   }
 
-  return true;
+  return { restoreCommand };
 }

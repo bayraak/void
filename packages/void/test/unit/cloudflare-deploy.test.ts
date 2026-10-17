@@ -7955,6 +7955,130 @@ describe('runCloudflareDeploy — remote migration gates', () => {
     expect(localTrace).toContain('build');
     expect(localTrace).not.toContain('wrangler:deploy');
   });
+
+  describe('a failure after the D1 migrations were applied', () => {
+    const bookmark = '00000085-0000024c';
+
+    // Pending until the apply runs, then current.
+    function migratingWrangler(pending: boolean): DeployWranglerRun {
+      let applied = false;
+      return operationFixture((args) => {
+        if (args[0] === 'whoami') {
+          return { ...cleanExit, stdout: '{"loggedIn":true,"accounts":[]}' };
+        }
+        if (args[0] === 'd1' && args[2] === 'apply') {
+          applied = true;
+        }
+        if (args[0] === 'd1' && args[2] === 'list') {
+          return {
+            ...cleanExit,
+            stdout:
+              pending && !applied
+                ? 'Migrations to be applied:\n0000_init'
+                : '✅ No migrations to apply!\n',
+          };
+        }
+        if (args[0] === 'd1' && args[1] === 'time-travel') {
+          return { ...cleanExit, stdout: JSON.stringify({ bookmark }) };
+        }
+        return cleanExit;
+      });
+    }
+
+    function restoreErrors(output: { mock: { calls: Array<Array<unknown>> } }): Array<string> {
+      return output.mock.calls
+        .map(([message]) => String(message))
+        .filter((message) => message.includes('applied before the deploy stopped'));
+    }
+
+    it('names the restore point again when the upload fails', async () => {
+      const root = d1Project(PROVISIONED_D1, INIT_MIGRATION);
+      const order: Array<string> = [];
+      const output = vi.spyOn(log, 'error').mockImplementation((message) => {
+        if (String(message).includes('applied before the deploy stopped')) {
+          order.push('restore');
+        }
+      });
+      const { deps } = harness({
+        runWrangler: migratingWrangler(true),
+        activateVersion: async () => ({ ok: false, reason: 'upload-failed', status: 1 }),
+        // process.exit never returns, so the restore point must be named before it.
+        exit: (code) => {
+          order.push('exit');
+          throw new ExitError(code);
+        },
+      });
+      try {
+        await expect(
+          runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps),
+        ).rejects.toBeInstanceOf(ExitError);
+        const reported = restoreErrors(output);
+        expect(order).toEqual(['restore', 'exit']);
+        expect(reported).toHaveLength(1);
+        expect(reported[0]).toContain('Fix the error and deploy again.');
+        // The test project saves no platform, so the command names it.
+        expect(reported[0]).toContain(
+          `void db restore --platform cloudflare --bookmark=${bookmark}`,
+        );
+      } finally {
+        output.mockRestore();
+      }
+    });
+
+    it('names the restore point again when the built config fails its check', async () => {
+      const root = d1Project(PROVISIONED_D1, INIT_MIGRATION);
+      const output = vi.spyOn(log, 'error').mockImplementation(() => {});
+      const { deps } = harness({
+        runWrangler: migratingWrangler(true),
+        verifyDeployConfig: () => ({ ok: false, reason: 'different account' }),
+      });
+      try {
+        await expect(
+          runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps),
+        ).rejects.toBeInstanceOf(ExitError);
+        expect(restoreErrors(output)).toHaveLength(1);
+      } finally {
+        output.mockRestore();
+      }
+    });
+
+    it('names the restore point again when publishing throws', async () => {
+      const root = d1Project(PROVISIONED_D1, INIT_MIGRATION);
+      const output = vi.spyOn(log, 'error').mockImplementation(() => {});
+      const { deps } = harness({
+        runWrangler: migratingWrangler(true),
+        activateVersion: async () => {
+          throw new Error('connection reset');
+        },
+      });
+      try {
+        await expect(
+          runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps),
+        ).rejects.toThrow('connection reset');
+        expect(restoreErrors(output)).toHaveLength(1);
+      } finally {
+        output.mockRestore();
+      }
+    });
+
+    it('names no restore point when the deploy applied no migration', async () => {
+      const root = d1Project(PROVISIONED_D1, INIT_MIGRATION);
+      const output = vi.spyOn(log, 'error').mockImplementation(() => {});
+      const { deps } = harness({
+        runWrangler: migratingWrangler(false),
+        activateVersion: async () => ({ ok: false, reason: 'upload-failed', status: 1 }),
+      });
+      try {
+        await expect(
+          runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps),
+        ).rejects.toBeInstanceOf(ExitError);
+        expect(restoreErrors(output)).toEqual([]);
+        expect(output.mock.calls.join('\n')).not.toContain('void db restore');
+      } finally {
+        output.mockRestore();
+      }
+    });
+  });
 });
 
 // The exact set wrangler will apply must equal the gated source set.

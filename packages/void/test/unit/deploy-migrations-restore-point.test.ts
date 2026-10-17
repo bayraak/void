@@ -53,7 +53,7 @@ describe('the D1 restore point a deploy takes before migrating', () => {
       () => true,
     );
 
-    expect(applied).toBe(true);
+    expect(applied).toEqual({ restoreCommand: `void db restore --bookmark=${bookmark}` });
     expect(runner.calls).toEqual([
       'd1.migrations.list',
       'd1.time-travel.bookmark',
@@ -253,7 +253,7 @@ describe('the D1 restore point a deploy takes before migrating', () => {
       () => true,
     );
 
-    expect(applied).toBe(true);
+    expect(applied).toEqual({ restoreCommand: undefined });
     expect(runner.calls).not.toContain('d1.time-travel.bookmark');
   });
 });
